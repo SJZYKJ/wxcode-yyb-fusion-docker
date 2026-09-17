@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>注册 - YYB Go</title>
+  <link rel="stylesheet" href="/static/css/auth.css">
+</head>
+<body>
+<main class="auth-layout">
+  <section class="auth-panel"><div class="auth-main">
+    <div class="brand"><span class="brand-mark">Y</span><div><div class="brand-name">YYB Go Enhanced</div><div class="brand-meta">用户注册</div></div></div>
+    <h1>创建账号</h1>
+    <p class="lead">首个账号自动成为管理员，后续账号默认为普通用户。</p>
+    <form id="form">
+      <div class="field"><label for="username">用户名</label><input class="input" id="username" autocomplete="username" pattern="[a-z0-9_.-]{3,64}" required><small>3-64 位小写字母、数字、点、下划线或连字符</small></div>
+      <div class="field"><label for="displayName">显示名</label><input class="input" id="displayName" autocomplete="name" maxlength="100" required></div>
+      <div class="field"><label for="password">密码</label><input class="input" id="password" type="password" autocomplete="new-password" minlength="10" required><small>至少 10 个字符</small></div>
+      <div class="form-error" id="error" role="alert"></div>
+      <button class="btn primary" id="submit" type="submit">注册并登录</button>
+    </form>
+    <p class="auth-foot"><a href="/login">返回登录</a></p>
+  </div></section>
+  <section class="auth-context"><div class="context-inner"><div class="context-kicker">Role-based access</div><h2>普通用户和运维管理员各自拥有清晰边界。</h2><p>首个账号用于初始化控制台。管理员可在用户管理中调整后续账号的角色、状态和密码。</p></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+$('form').onsubmit=async e=>{e.preventDefault();$('error').textContent='';$('submit').disabled=true;try{const response=await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,displayName:$('displayName').value,password:$('password').value})}),json=await response.json();if(!response.ok||json.code!==0)throw new Error(json.msg||'注册失败');location.href=json.data.next||'/settings'}catch(error){$('error').textContent=error.message;$('submit').disabled=false}};
+</script>
+</body>
+</html>

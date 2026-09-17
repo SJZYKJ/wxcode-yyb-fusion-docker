@@ -1,0 +1,6 @@
+id=yyb_go
+name=YYB Go
+version=dev
+versionCode=1
+author=525815266
+description=Run YYB Go as a Magisk late-start service on Android arm64.

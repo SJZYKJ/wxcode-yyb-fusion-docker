@@ -1,0 +1,14 @@
+.env
+data/
+resource/db/
+resource/avatars/
+resource/qr/
+nginx.htpasswd
+*.db
+*.sqlite
+*.sqlite3
+*.log
+__pycache__/
+*.py[cod]
+/yyb-go
+/dist/

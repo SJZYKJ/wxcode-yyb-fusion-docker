@@ -1,0 +1,18 @@
+# 运行时数据（SQLite / 头像 / 二维码），绝不入库
+data/
+.env
+
+# 日志与临时文件
+*.log
+legacy-*
+
+# Python 缓存（src/scripts 下是青龙脚本）
+__pycache__/
+*.py[cod]
+
+# 本机临时目录
+.tmp*/
+*.jar
+
+# 注意：gateway/yyb-go-amd64 与 gateway/yyb-go-arm64 是 Dockerfile 依赖的
+# 预编译二进制，必须入库，不要加进忽略列表。

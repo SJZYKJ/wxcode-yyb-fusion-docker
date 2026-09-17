@@ -1,0 +1,79 @@
+# ============================================================
+# 本地构建版：用本仓库的 Dockerfile 现场打镜像（改了 Go 源码后用这个）
+#
+#     docker compose -f compose.build.yaml up -d --build
+#
+# 与 compose.yaml 的唯一区别是多了 build: —— 前者默认 docker pull，
+# 这个默认 docker build。项目名/服务名/数据卷完全一致，两者可以互换，
+# 不会产生两套容器。
+#
+# ⚠️ 改了 src/ 下的 Go 代码后必须先交叉编译，否则镜像里还是旧二进制：
+#     ./build-gateway.sh
+#     cp -r src/resource/templates/. gateway/resource/templates/
+#   再执行上面的 compose 命令。
+# ============================================================
+name: wxcode-yyb-fusion-docker
+
+services:
+  yyb-go:
+    platform: "${YYB_PLATFORM:-linux/amd64}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: "${IMAGE_REPO:-chungg/wxcode-yyb-fusion}:${IMAGE_TAG:-latest}"
+    container_name: wxcode-yyb-gateway
+    restart: unless-stopped
+    command:
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8088"
+      - -resource-root
+      - /app/resource
+      - -keepalive-interval
+      - ${YYB_KEEPALIVE_INTERVAL:-30m}
+      - -keepalive-ahead
+      - ${YYB_KEEPALIVE_AHEAD:-45m}
+    environment:
+      WXCODE_URLS: ${WXCODE_URLS:-}
+      WXCODE_HOOK_PORT: ${WXCODE_HOOK_PORT:-8088}
+      PANEL_TYPE: ${PANEL_TYPE:-qinglong}
+      QL_URL: ${QL_URL:-}
+      QL_CLIENT_ID: ${QL_CLIENT_ID:-}
+      QL_CLIENT_SECRET: ${QL_CLIENT_SECRET:-}
+      DAIDAI_URL: ${DAIDAI_URL:-}
+      DAIDAI_APP_KEY: ${DAIDAI_APP_KEY:-}
+      DAIDAI_APP_SECRET: ${DAIDAI_APP_SECRET:-}
+      YYB_QINGLONG_SERVER: ${YYB_QINGLONG_SERVER:-}
+      YYB_QINGLONG_REPO: ${YYB_QINGLONG_REPO:-}
+      YYB_DNS_SERVERS: ${YYB_DNS_SERVERS:-223.5.5.5:53,119.29.29.29:53}
+      YYB_AUTH_DRIVER: ${YYB_AUTH_DRIVER:-sqlite}
+      YYB_AUTH_DSN: ${YYB_AUTH_DSN:-}
+      YYB_AUTH_MYSQL_DSN: ${YYB_AUTH_MYSQL_DSN:-}
+      YYB_ADMIN_USER: ${YYB_ADMIN_USER:-admin}
+      YYB_ADMIN_PASSWORD: ${YYB_ADMIN_PASSWORD:-}
+      YYB_COOKIE_SECURE: ${YYB_COOKIE_SECURE:-false}
+      YYB_API_TOKEN: ${YYB_API_TOKEN:-}
+      GIN_MODE: release
+    volumes:
+      - ${DATA_DIR:-./data}/db:/app/resource/db
+      - ${DATA_DIR:-./data}/avatars:/app/resource/avatars
+      - ${DATA_DIR:-./data}/qr:/app/resource/qr
+    ports:
+      - "${YYB_BIND_ADDRESS:-0.0.0.0}:${YYB_PORT:-8088}:8088"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    cap_drop:
+      - ALL

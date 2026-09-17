@@ -1,0 +1,25 @@
+# YYB Go 融合网关（源码构建版）
+# 构建: docker build -f Dockerfile.src -t local/wxcode-yyb-gateway:src .
+# 说明: src/ 为融合版完整源码（与预编译产物同源）
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+ENV GOPROXY=https://goproxy.cn,direct
+COPY src/go.mod src/go.sum ./
+RUN go mod download
+COPY src/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yyb-go ./cmd/yyb-go
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates wget su-exec \
+    && addgroup -S yyb && adduser -S -G yyb -h /app yyb
+WORKDIR /app
+COPY --from=build /out/yyb-go /app/yyb-go
+COPY gateway/resource /app/resource
+COPY wxcode/wxcode_2.1.0.apk /app/wxcode/wxcode_2.1.0.apk
+COPY entrypoint.sh /entrypoint.sh
+RUN mkdir -p /app/resource/db /app/resource/avatars /app/resource/qr \
+    && chown -R yyb:yyb /app && chmod 755 /app/yyb-go /entrypoint.sh
+USER root
+EXPOSE 8088
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["-host", "0.0.0.0", "-port", "8088", "-resource-root", "/app/resource"]

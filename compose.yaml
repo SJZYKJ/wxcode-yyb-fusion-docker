@@ -1,0 +1,89 @@
+# ============================================================
+# YYB Go 融合网关 (yyb-go + wxcode 双通道) - 纯 Docker 部署
+#
+# 默认走「拉取预构建镜像」，一条命令即可启动：
+#     cp .env.example .env && docker compose up -d
+#
+# 想用源码在本机重新构建（改了 Go 代码后），改用：
+#     docker compose -f compose.build.yaml up -d --build
+#   或先跑 ./build-gateway.sh 交叉编译 gateway/yyb-go-{amd64,arm64}，
+#   再 build —— 见 README-DOCKER.md「重新出镜像」。
+#
+# 架构：单服务 yyb-go 网关；微信扫码登录为原生能力（浏览器 /scan）
+#        wxcode 设备（已 root 手机上安装 wxcode_2.1.0.apk）为可选取码端点
+# 取码链路：
+#   原生: /scan 显示二维码 -> 手机微信扫码 -> login_buffer 自动刷新
+#   设备: WXCODE_URLS=http://<手机IP>:8088 -> wxcode NanoHTTPD -> 微信进程 hook
+# 详情见 README-DOCKER.md
+# ============================================================
+name: wxcode-yyb-fusion-docker
+
+services:
+  # ---------- 融合网关容器（单服务） ----------
+  yyb-go:
+    platform: "${YYB_PLATFORM:-linux/amd64}"
+    image: "${IMAGE_REPO:-chungg/wxcode-yyb-fusion}:${IMAGE_TAG:-latest}"
+    container_name: wxcode-yyb-gateway
+    restart: unless-stopped
+    command:
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8088"
+      - -resource-root
+      - /app/resource
+      - -keepalive-interval
+      - ${YYB_KEEPALIVE_INTERVAL:-30m}
+      - -keepalive-ahead
+      - ${YYB_KEEPALIVE_AHEAD:-45m}
+    environment:
+      # 可选取码端点：已 root 手机上安装 wxcode 后填 http://<手机IP>:8088
+      # 留空 = 仅使用原生微信扫码登录（推荐，无需手机模块）
+      WXCODE_URLS: ${WXCODE_URLS:-}
+      WXCODE_HOOK_PORT: ${WXCODE_HOOK_PORT:-8088}
+      PANEL_TYPE: ${PANEL_TYPE:-qinglong}
+      QL_URL: ${QL_URL:-}
+      QL_CLIENT_ID: ${QL_CLIENT_ID:-}
+      QL_CLIENT_SECRET: ${QL_CLIENT_SECRET:-}
+      DAIDAI_URL: ${DAIDAI_URL:-}
+      DAIDAI_APP_KEY: ${DAIDAI_APP_KEY:-}
+      DAIDAI_APP_SECRET: ${DAIDAI_APP_SECRET:-}
+      YYB_QINGLONG_SERVER: ${YYB_QINGLONG_SERVER:-}
+      YYB_QINGLONG_REPO: ${YYB_QINGLONG_REPO:-}
+      YYB_DNS_SERVERS: ${YYB_DNS_SERVERS:-223.5.5.5:53,119.29.29.29:53}
+      YYB_AUTH_DRIVER: ${YYB_AUTH_DRIVER:-sqlite}
+      YYB_AUTH_DSN: ${YYB_AUTH_DSN:-}
+      YYB_AUTH_MYSQL_DSN: ${YYB_AUTH_MYSQL_DSN:-}
+      YYB_ADMIN_USER: ${YYB_ADMIN_USER:-admin}
+      YYB_ADMIN_PASSWORD: ${YYB_ADMIN_PASSWORD:-}
+      YYB_COOKIE_SECURE: ${YYB_COOKIE_SECURE:-false}
+      # 访问令牌：留空 = /login、/instances、/wxapp/* 等取码接口不做鉴权
+      #（与旧版本行为一致）。填了之后脚本必须带令牌，详见 README-DOCKER.md 第五节。
+      YYB_API_TOKEN: ${YYB_API_TOKEN:-}
+      GIN_MODE: release
+    volumes:
+      # 数据目录默认落在 compose 文件同级的 ./data 下；
+      # 想放到别处（例如 NAS 的固定盘位）就改 .env 里的 DATA_DIR。
+      - ${DATA_DIR:-./data}/db:/app/resource/db
+      - ${DATA_DIR:-./data}/avatars:/app/resource/avatars
+      - ${DATA_DIR:-./data}/qr:/app/resource/qr
+    ports:
+      - "${YYB_BIND_ADDRESS:-0.0.0.0}:${YYB_PORT:-8088}:8088"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8088/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    # entrypoint 需要 root 修复 bind-mount 数据目录权限（CHOWN/FOWNER/DAC_OVERRIDE）
+    # 并用 su-exec 降权到 yyb（SETUID/SETGID）；其余能力全部丢弃
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    cap_drop:
+      - ALL

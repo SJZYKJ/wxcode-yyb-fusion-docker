@@ -1,0 +1,215 @@
+# ==============================================================================
+# 在 GitHub Actions 上构建镜像，并推送到 Docker Hub
+#
+# 为什么用云端构建（而不是本机）：
+#   本机无需安装 Docker Desktop / WSL2，也不需要重启，
+#   构建在 GitHub 的 runner 上完成，产物直接推到 Docker Hub。
+#   之后任何机器只要一句 docker compose up -d 就能部署。
+#
+# —— 使用前只需做一次（约 3 分钟）——
+#
+#   1. 把本目录推到一个 GitHub 仓库（私有仓库也可以）
+#
+#   2. 到仓库 Settings → Secrets and variables → Actions → New repository secret
+#        名称：DOCKERHUB_USERNAME   值：你的 Docker Hub 用户名
+#        名称：DOCKERHUB_TOKEN      值：在 https://hub.docker.com/settings/security
+#                                      点 "New Access Token" 生成的令牌
+#      ⚠ 请使用 Access Token，不要用账号登录密码
+#
+#   3. 触发构建，任选一种：
+#        · 推送到 main / master 分支（最常用）
+#        · 到仓库 Actions 页面，选 "构建并推送镜像到 Docker Hub" → Run workflow
+#
+# —— 镜像标签规则（统一约定，改之前请先读完）——
+#
+#   每次构建会推三个标签，命名全部由 CI 生成，不需要手工维护版本文件：
+#
+#     latest                    默认分支的最新构建
+#     SHA-<月日>-V<序号>.0       本次版本，例：SHA-0917-V1.0、SHA-0917-V2.0
+#     sha-<7位提交号>            按提交精确定位，用于回滚
+#
+#   「序号」按天重置：同一天的第 1 次构建是 V1.0，第 2 次是 V2.0；
+#   第二天又从 V1.0 开始。序号取自本仓库的 Git 标签（CI 每次构建成功后
+#   会打同名 Git 标签并建 Release），因此 GitHub 与 Docker Hub 两边的
+#   版本号始终一致。
+#
+# —— 构建结果 ——
+#   镜像地址：<DOCKERHUB_USERNAME>/wxcode-yyb-fusion:latest
+#   部署时在 .env 里填：IMAGE_REPO=<DOCKERHUB_USERNAME>/wxcode-yyb-fusion
+#   回滚时在 .env 里把 IMAGE_TAG 改成 sha-<7位提交号>
+#
+# —— 本项目的特殊之处 ——
+#   gateway/ 下已经放了交叉编译好的 linux/amd64 与 linux/arm64 二进制，
+#   Dockerfile 只是 COPY，不做 Go 编译，所以双架构构建也很便宜。
+#   ⚠️ 改了 src/ 下的 Go 代码后，必须先在本机跑 ./build-gateway.sh
+#      重新生成 gateway/ 里的二进制并提交，否则镜像里还是旧代码。
+# ==============================================================================
+
+name: 构建并推送镜像到 Docker Hub
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  # 允许在网页上手动触发，并可额外指定一个镜像标签
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '额外要推送的镜像标签（可留空）'
+        required: false
+        default: ''
+
+# 串行化同一分支的构建，避免两次构建算出同一个版本序号
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: wxcode-yyb-fusion
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # 需要写权限来打 Git 标签、建 Release
+    steps:
+      - name: 拉取代码（含全部标签，用于计算版本序号）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 校验双架构预编译二进制已入库
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            f="gateway/yyb-go-${arch}"
+            if [ ! -f "$f" ]; then
+              echo "::error::缺少 $f —— 请先在本机运行 ./build-gateway.sh 并提交产物"
+              exit 1
+            fi
+            head -c 4 "$f" | od -An -tx1 | tr -d ' \n' | grep -q '^7f454c46' \
+              || { echo "::error::$f 不是 ELF 文件"; exit 1; }
+            echo "  ok  $f  ($(du -h "$f" | cut -f1))"
+          done
+
+      - name: 准备 QEMU（用于跨架构构建）
+        uses: docker/setup-qemu-action@v3
+
+      - name: 准备 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 计算本次版本号
+        id: ver
+        run: |
+          set -uo pipefail
+          # 用北京时间判定「当天」，与用户直觉一致
+          MMDD=$(TZ=Asia/Shanghai date +%m%d)
+
+          # 序号来源：本仓库里当天的 SHA-<MMDD>-V<n>.0 标签个数（取最大值 +1）
+          git fetch --tags --force --quiet 2>/dev/null || true
+          MAX=$(git tag -l "SHA-${MMDD}-V*" \
+                  | sed -nE 's/^SHA-[0-9]{4}-V([0-9]+)\.[0-9]+$/\1/p' \
+                  | sort -n | tail -1)
+          if [ -z "${MAX}" ]; then
+            MAX=0
+          fi
+          N=$((MAX + 1))
+
+          VERSION="SHA-${MMDD}-V${N}.0"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "mmdd=${MMDD}" >> "$GITHUB_OUTPUT"
+
+          echo "### 本次版本：\`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "（当天第 ${N} 次构建；版本序号按天重置，取自本仓库 Git 标签）" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 生成镜像标签与元数据（latest / sha-提交号）
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # 默认分支构建 -> latest
+            type=raw,value=latest,enable={{is_default_branch}}
+            # 每次构建附带短提交号，便于按提交精确回滚
+            type=sha,format=short
+            # 网页手动触发时额外附加输入的自定义标签
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+
+      - name: 构建并推送
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          # 两个架构都要：网关本身就在 ARM 服务器上跑得不少，而 Dockerfile
+          # 只是 COPY 预编译二进制，多架构几乎不增加构建时间
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.version }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 复用构建缓存，后续构建只需 1-2 分钟
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 打 Git 标签并创建 GitHub Release
+        # 只在推送分支时做；手动触发的构建不打标签
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPO: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -uo pipefail
+
+          SHORT=$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)
+          # 不用 heredoc：YAML 块标量会给每行带上缩进，写进文件会破坏 Markdown
+          {
+            printf '## 镜像\n\n'
+            printf '```\n'
+            printf '%s:%s\n' "${REPO}" "${VERSION}"
+            printf '%s:latest\n' "${REPO}"
+            printf '%s:sha-%s\n' "${REPO}" "${SHORT}"
+            printf '```\n\n'
+            printf -- '- 摘要：`%s`\n' "${DIGEST}"
+            printf -- '- 平台：`linux/amd64`、`linux/arm64`\n'
+            printf -- '- 提交：`%s`\n\n' "${GITHUB_SHA}"
+            printf '## 部署\n\n'
+            printf '```bash\n'
+            printf 'docker compose pull && docker compose up -d\n'
+            printf '```\n\n'
+            printf '回滚：把 `.env` 里的 `IMAGE_TAG` 改成 `sha-%s` 后重新 up。\n' "${SHORT}"
+          } > /tmp/notes.md
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "Release ${VERSION} 已存在，更新说明"
+            gh release edit "${VERSION}" --notes-file /tmp/notes.md
+          else
+            gh release create "${VERSION}" \
+              --target "${GITHUB_SHA}" \
+              --title "${VERSION}" \
+              --notes-file /tmp/notes.md
+          fi
+
+      - name: 输出镜像地址
+        run: |
+          echo "### 镜像已推送到 Docker Hub :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "摘要：\`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "部署时在项目 .env 里填：\`IMAGE_REPO=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY

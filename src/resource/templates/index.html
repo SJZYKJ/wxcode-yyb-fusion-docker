@@ -1,0 +1,1475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>工作台 - YYB Go</title>
+  <link rel="stylesheet" href="/static/css/platform.css">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: oklch(1 0 0);
+      --bg-soft: oklch(0.974 0.004 250);
+      --surface: oklch(0.986 0.004 250);
+      --surface-strong: oklch(0.948 0.009 250);
+      --ink: oklch(0.19 0.025 252);
+      --muted: oklch(0.43 0.025 252);
+      --faint: oklch(0.58 0.018 252);
+      --line: oklch(0.885 0.012 250);
+      --primary: oklch(0.54 0.205 3);
+      --primary-hover: oklch(0.48 0.195 3);
+      --accent: oklch(0.44 0.112 190);
+      --accent-soft: oklch(0.94 0.027 190);
+      --success: oklch(0.55 0.135 145);
+      --success-soft: oklch(0.94 0.035 145);
+      --warning: oklch(0.68 0.135 78);
+      --warning-soft: oklch(0.955 0.04 78);
+      --danger: oklch(0.55 0.18 25);
+      --danger-soft: oklch(0.955 0.032 25);
+      --code-bg: oklch(0.16 0.022 252);
+      --code-ink: oklch(0.96 0.006 250);
+      --radius: 8px;
+      --topbar-h: 68px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      height: 100%;
+    }
+
+    body {
+      min-height: 100%;
+      margin: 0;
+      background: var(--bg-soft);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topbar {
+      height: var(--topbar-h);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 0 28px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius);
+      display: grid;
+      place-items: center;
+      background: var(--ink);
+      color: var(--bg);
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 760;
+      letter-spacing: 0;
+      line-height: 1.1;
+    }
+
+    .brand-subtitle {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .top-actions,
+    .panel-actions,
+    .inline-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      min-height: 36px;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      background: var(--bg);
+      color: var(--ink);
+      text-decoration: none;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+    }
+
+    .btn:hover {
+      background: var(--surface-strong);
+    }
+
+    .btn:focus-visible,
+    .account-card:focus-visible,
+    .quick-link:focus-visible {
+      outline: 3px solid oklch(0.82 0.08 190);
+      outline-offset: 2px;
+    }
+
+    .btn.primary {
+      background: var(--primary);
+      color: var(--bg);
+      border-color: var(--primary);
+      font-weight: 700;
+    }
+
+    .btn.primary:hover {
+      background: var(--primary-hover);
+      border-color: var(--primary-hover);
+    }
+
+    .btn.secondary {
+      border-color: var(--line);
+    }
+
+    .btn.danger {
+      color: var(--danger);
+      border-color: var(--danger-soft);
+      background: var(--danger-soft);
+    }
+
+    .btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.62;
+    }
+
+    .status-pill {
+      min-height: 30px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: var(--surface);
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--faint);
+      flex: 0 0 auto;
+    }
+
+    .status-pill.ok .status-dot,
+    .account-status.alive .status-dot {
+      background: var(--success);
+    }
+
+    .status-pill.bad .status-dot,
+    .account-status.expired .status-dot {
+      background: var(--danger);
+    }
+
+    .shell {
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      padding: 22px 28px 32px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    .overview {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .summary {
+      min-width: 0;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .summary h2 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 760;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .summary-copy {
+      margin: 0;
+      max-width: 72ch;
+      color: var(--muted);
+    }
+
+    .stat-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .stat-chip {
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+
+    .stat-chip strong {
+      color: var(--ink);
+      font-weight: 760;
+    }
+
+    .quick-actions {
+      min-width: 260px;
+      background: var(--ink);
+      color: var(--bg);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: grid;
+      align-content: space-between;
+      gap: 14px;
+    }
+
+    .quick-actions p {
+      margin: 0;
+      color: oklch(0.86 0.012 250);
+      font-size: 13px;
+    }
+
+    .quick-actions .btn {
+      background: oklch(0.25 0.028 252);
+      color: var(--bg);
+      border-color: oklch(0.34 0.028 252);
+    }
+
+    .quick-actions .btn:hover {
+      background: oklch(0.31 0.032 252);
+    }
+
+    .account-band,
+    .panel {
+      background: var(--bg);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .section-head {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-title {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .section-title h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .section-title p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .account-strip {
+      padding: 12px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 10px;
+      max-height: 326px;
+      overflow-y: auto;
+      align-content: start;
+      scrollbar-width: thin;
+      min-height: 112px;
+    }
+
+    .account-card {
+      width: 100%;
+      min-width: 0;
+      min-height: 88px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--ink);
+      text-align: left;
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      gap: 9px;
+      align-items: start;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+
+    .account-card:hover {
+      background: var(--bg);
+      border-color: oklch(0.78 0.035 190);
+    }
+
+    .account-card.selected {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+    }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      overflow: hidden;
+      background: var(--surface-strong);
+      border: 1px solid var(--line);
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-weight: 760;
+    }
+
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .account-main {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .account-header {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .account-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 760;
+    }
+
+    .account-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+
+    .account-meta {
+      color: var(--faint);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .account-openid {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .empty-state {
+      grid-column: 1 / -1;
+      min-height: 100px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 18px;
+      text-align: center;
+    }
+
+    .work-grid {
+      display: grid;
+      grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.15fr) minmax(260px, 0.65fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel-body {
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .field {
+      display: grid;
+      gap: 7px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .input,
+    .select,
+    .textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--bg);
+      color: var(--ink);
+      padding: 10px 11px;
+      outline: none;
+      transition: border-color 160ms ease, background 160ms ease;
+    }
+
+    .input:focus,
+    .select:focus,
+    .textarea:focus {
+      border-color: var(--accent);
+      background: var(--surface);
+    }
+
+    .textarea {
+      min-height: 164px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      line-height: 1.55;
+      font-size: 13px;
+    }
+
+    .selected-account {
+      min-height: 44px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 10px 11px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+    }
+
+    .selected-account strong {
+      color: var(--ink);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .account-tools {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto auto;
+      gap: 8px;
+      margin: 10px 0 14px;
+    }
+
+    .integration {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .integration summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .integration .form-grid { margin-top: 12px; }
+
+    .field-note {
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    .result-panel .panel-body {
+      gap: 10px;
+    }
+
+    .result-box {
+      min-height: 360px;
+      max-height: 560px;
+      margin: 0;
+      overflow: auto;
+      border-radius: var(--radius);
+      background: var(--code-bg);
+      color: var(--code-ink);
+      padding: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .result-box.error {
+      color: oklch(0.86 0.075 25);
+    }
+
+    .quick-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .quick-link {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 11px;
+      background: var(--surface);
+      color: var(--ink);
+      text-decoration: none;
+      display: grid;
+      gap: 2px;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+
+    .quick-link:hover {
+      background: var(--bg);
+      border-color: oklch(0.78 0.035 190);
+    }
+
+    .quick-link span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .log-line {
+      padding: 10px 11px;
+      border-radius: var(--radius);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 1120px) {
+      .overview,
+      .work-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .quick-actions {
+        min-width: 0;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        height: auto;
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 14px 16px;
+      }
+
+      .top-actions {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .top-actions .btn,
+      .top-actions .status-pill {
+        width: 100%;
+      }
+
+      .shell {
+        padding: 16px;
+      }
+
+      .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .panel-actions,
+      .inline-actions {
+        width: 100%;
+      }
+
+      .panel-actions .btn,
+      .inline-actions .btn {
+        flex: 1;
+      }
+
+      .account-tools { grid-template-columns: 1fr; }
+
+      .account-strip {
+        grid-template-columns: minmax(0, 1fr);
+        max-height: 438px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 1ms !important;
+        animation-duration: 1ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">Y</div>
+        <div>
+          <h1 class="brand-title">YYB Go 控制台</h1>
+          <div class="brand-subtitle">账号、扫码、能力调用集中操作</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="status-pill" id="healthPill"><span class="status-dot"></span><span>检测服务中</span></span>
+        <span class="status-pill" id="wxcodePill"><span class="status-dot"></span><span>设备取码检测中</span></span>
+        <a class="btn secondary" href="/runs">运行管理</a>
+        <a class="btn secondary" href="/docs/index.html">Swagger</a>
+        <a class="btn secondary" href="http://127.0.0.1:8088/" target="_blank" rel="noopener" title="wxcode Xposed 取码服务(微信hook)">wxcode取码</a>
+        <a class="btn secondary" href="/users" id="usersEntry" hidden>用户管理</a>
+        <a class="btn secondary" href="/settings">个人设置</a>
+        <a class="btn primary" href="/scan">扫码添加</a>
+        <button class="btn secondary" id="logoutBtn" type="button" title="退出登录">退出</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="overview" aria-label="控制台概览">
+        <div class="summary">
+          <h2>选择账号，执行服务调用</h2>
+          <p class="summary-copy">首页现在聚焦运行工作流。接口详情保留在 Swagger，当前页面只放账号状态、调用配置和返回结果。</p>
+          <div class="stat-row" aria-label="运行统计">
+            <span class="stat-chip">账号 <strong id="accountCount">0</strong></span>
+            <span class="stat-chip">可用 <strong id="aliveCount">0</strong></span>
+            <span class="stat-chip">能力 <strong id="featureCount">0</strong></span>
+            <span class="stat-chip">当前 <strong id="currentAccountText">未选择</strong></span>
+          </div>
+        </div>
+        <aside class="quick-actions" aria-label="常用动作">
+          <p>常用入口放在这里，避免把接口文档铺满首页。</p>
+          <div class="inline-actions">
+            <button class="btn" id="refreshAllBtn" type="button">刷新存活</button>
+            <button class="btn" id="resyncAllBtn" type="button">同步资料</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="account-band" aria-label="账号队列">
+        <div class="section-head">
+          <div class="section-title">
+            <h3>账号队列</h3>
+            <p>点击账号后，下方调用面板会使用该账号</p>
+          </div>
+          <div class="panel-actions">
+            <button class="btn secondary" id="reloadAccountsBtn" type="button">重新加载</button>
+            <a class="btn primary" href="/scan">添加账号</a>
+          </div>
+        </div>
+        <div class="account-strip" id="accountStrip">
+          <div class="empty-state">账号加载中</div>
+        </div>
+      </section>
+
+      <section class="work-grid" aria-label="调用工作区">
+        <section class="panel" aria-label="调用配置">
+          <div class="section-head">
+            <div class="section-title">
+              <h3>调用配置</h3>
+              <p>配置目标小程序和能力参数</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="selected-account">
+              <span>当前账号</span>
+              <strong id="selectedAccountName">未选择</strong>
+            </div>
+            <div class="account-tools">
+              <input class="input" id="accountRemarkInput" maxlength="80" placeholder="账号备注，例如：Boom">
+              <button class="btn secondary" id="saveRemarkBtn" type="button">保存备注</button>
+              <button class="btn secondary" id="shareAccountBtn" type="button">脚本可读：开</button>
+              <button class="btn secondary" id="syncQingLongBtn" type="button">同步到青龙</button>
+              <button class="btn danger" id="deleteAccountBtn" type="button">删除账号</button>
+            </div>
+            <p class="field-note" id="shareAccountNote">“脚本可读”开启时，顺丰/移动云盘等脚本可通过 /instances 读到该账号；关闭后只保留本控制台可见。</p>
+            <div class="form-grid">
+              <div class="field">
+                <label for="featureSel">能力</label>
+                <select class="select" id="featureSel"></select>
+              </div>
+              <div class="field">
+                <label for="appidInput" id="appidLabel">APPID</label>
+                <input class="input" id="appidInput" value="wx141bfb9b73c970a9" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field hidden" id="oauthRedirectGroup">
+                <label for="oauthRedirectInput">公众号回调地址</label>
+                <input class="input" id="oauthRedirectInput" type="url" placeholder="https://你的域名/callback" autocomplete="url">
+              </div>
+              <div class="field hidden" id="oauthScopeGroup">
+                <label for="oauthScopeInput">授权范围</label>
+                <select class="select" id="oauthScopeInput">
+                  <option value="snsapi_base">snsapi_base（静默授权）</option>
+                  <option value="snsapi_userinfo">snsapi_userinfo（用户确认）</option>
+                </select>
+              </div>
+              <div class="field hidden" id="oauthStateGroup">
+                <label for="oauthStateInput">State（可选）</label>
+                <input class="input" id="oauthStateInput" maxlength="128" placeholder="留空自动生成随机值" autocomplete="off">
+              </div>
+              <div class="field hidden" id="payloadGroup">
+                <label for="payloadInput">请求 JSON</label>
+                <textarea class="textarea" id="payloadInput" spellcheck="false">{"api_name":"getUserInfo","data":{},"env":1}</textarea>
+              </div>
+            </div>
+            <div class="inline-actions">
+              <button class="btn primary" id="callBtn" type="button">执行调用</button>
+              <button class="btn secondary" id="clearResultBtn" type="button">清空结果</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel result-panel" aria-label="调用结果">
+          <div class="section-head">
+            <div class="section-title">
+              <h3>返回结果</h3>
+              <p id="resultMeta">等待调用</p>
+            </div>
+            <button class="btn secondary" id="copyResultBtn" type="button">复制</button>
+          </div>
+          <div class="panel-body">
+            <pre class="result-box" id="resultBox">选择账号并执行调用后，返回内容会显示在这里。</pre>
+          </div>
+        </section>
+
+        <aside class="panel" aria-label="系统入口">
+          <div class="section-head">
+            <div class="section-title">
+              <h3>系统入口</h3>
+              <p>文档、接口和状态</p>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="quick-list">
+              <a class="quick-link" href="/docs/index.html">
+                Swagger 文档
+                <span>浏览完整 OpenAPI 接口</span>
+              </a>
+              <a class="quick-link" href="/openapi.json">
+                OpenAPI JSON
+                <span>用于接口工具导入</span>
+              </a>
+              <a class="quick-link" href="/scan">
+                扫码页面
+                <span>添加新的微信账号</span>
+              </a>
+              <a class="quick-link" href="/runs">
+                账号运行管理
+                <span>配置账号任务、开关和推送</span>
+              </a>
+            </div>
+            <details class="integration" id="qingLongSettings" hidden>
+              <summary id="panelSettingsSummary">面板连接设置（青龙 / 呆呆面板）</summary>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="qingLongType">面板类型</label>
+                  <select class="input" id="qingLongType" onchange="updatePanelLabels()">
+                    <option value="qinglong">青龙面板 (Qinglong)</option>
+                    <option value="daidai">呆呆面板 (daidai-panel)</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="qingLongURL" id="labelPanelURL">面板地址</label>
+                  <input class="input" id="qingLongURL" placeholder="http://qinglong:5700" autocomplete="url">
+                </div>
+                <div class="field">
+                  <label for="qingLongClientID" id="labelClientID">Client ID / App Key</label>
+                  <input class="input" id="qingLongClientID" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="qingLongSecret" id="labelClientSecret">Client Secret / App Secret</label>
+                  <input class="input" id="qingLongSecret" type="password" autocomplete="new-password">
+                  <span class="field-note" id="qingLongSecretNote">保存时会先测试连接</span>
+                </div>
+                <div class="inline-actions">
+                  <button class="btn primary" id="saveQingLongBtn" type="button">测试并保存</button>
+                  <button class="btn secondary" id="clearQingLongBtn" type="button">清除配置</button>
+                </div>
+              </div>
+            </details>
+            <div class="log-line" id="activityLine">尚未执行操作</div>
+          </div>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      accounts: [],
+      features: [
+        { name: "getCode", label: "/wx/code 获取小程序 code", route: "/wx/code", requiresAppID: true },
+        { name: "getUserInfo", label: "/wx/getuserinfo 用户信息", route: "/wx/getuserinfo", requiresAppID: false },
+        { name: "encryptKey", label: "/wx/encryptkey 加密 key", route: "/wx/encryptkey", requiresAppID: true },
+        { name: "getPhoneNumber", label: "/wx/getphonenumber 手机号", route: "/wx/getphonenumber", requiresAppID: true },
+        { name: "cloud", label: "/wx/cloud 云函数", route: "/wx/cloud", requiresAppID: true, needsPayload: true },
+        { name: "qrcodeauth", label: "/wx/qrcodeauth 二维码授权", route: "/wx/qrcodeauth", requiresAppID: false, requiresAccount: false },
+        { name: "mpGetA8Key", label: "/wx/mpgeta8key 文章会话", route: "/wx/mpgeta8key", requiresAppID: true, needsPayload: true },
+        { name: "appmsgext", label: "/wx/appmsgext 文章阅读数", route: "/wx/appmsgext", requiresAppID: true, needsPayload: true },
+        { name: "appmsglike", label: "/wx/appmsglike 文章点赞", route: "/wx/appmsglike", requiresAppID: true, needsPayload: true },
+        { name: "oauth", label: "/wx/oauth 公众号授权", route: "/wx/oauth", requiresAppID: true }
+      ],
+      selectedOpenID: "",
+      lastResult: "",
+      user: null,
+      authEnabled: true,
+      isAdmin: true
+    };
+
+    const $ = id => document.getElementById(id);
+
+    $("logoutBtn").addEventListener("click", async () => {
+      await fetch("/logout", { method: "POST" });
+      window.location.href = "/login";
+    });
+
+    function escapeHTML(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function api(method, url, body) {
+      const options = { method, headers: { "Content-Type": "application/json" } };
+      if (body !== undefined) options.body = JSON.stringify(body);
+      const response = await fetch(url, options);
+      const text = await response.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
+      const isEnvelope = data && typeof data === "object" && !Array.isArray(data)
+        && Object.prototype.hasOwnProperty.call(data, "code")
+        && Object.prototype.hasOwnProperty.call(data, "msg")
+        && Object.prototype.hasOwnProperty.call(data, "data");
+      if (!response.ok || (isEnvelope && data.code !== 0)) {
+        const error = new Error(isEnvelope ? data.msg : "HTTP " + response.status);
+        error.status = response.status;
+        error.code = isEnvelope ? data.code : response.status;
+        error.data = isEnvelope ? data.data : data;
+        error.payload = data;
+        throw error;
+      }
+      return isEnvelope ? data.data : data;
+    }
+
+    function accountName(account) {
+      return account.remark || account.nickname || account.alias || account.openid || "未命名账号";
+    }
+
+    function statusText(status) {
+      if (status === "alive") return "可用";
+      if (status === "expired") return "需重扫";
+      return "待确认";
+    }
+
+    function statusClass(status) {
+      if (status === "alive") return "alive";
+      if (status === "expired") return "expired";
+      return "unknown";
+    }
+
+    function formatChecked(ts) {
+      if (!ts) return "未检测";
+      const date = new Date(ts * 1000);
+      const pad = n => String(n).padStart(2, "0");
+      return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    function setActivity(message) {
+      $("activityLine").textContent = message;
+    }
+
+    function setResult(value, meta, isError) {
+      const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      state.lastResult = text;
+      $("resultBox").textContent = text;
+      $("resultBox").classList.toggle("error", Boolean(isError));
+      $("resultMeta").textContent = meta || "已更新";
+    }
+
+    const getSelectedAccount = () => {
+      return state.accounts.find(item => item.openid === state.selectedOpenID) || null;
+    };
+
+    function syncSelectedAccount() {
+      const selected = getSelectedAccount();
+      const label = selected ? accountName(selected) : "未选择";
+      $("selectedAccountName").textContent = label;
+      $("currentAccountText").textContent = label;
+      $("accountRemarkInput").value = selected?.remark || "";
+      $("accountRemarkInput").disabled = !selected;
+      $("saveRemarkBtn").disabled = !selected;
+      $("syncQingLongBtn").disabled = !selected;
+      $("deleteAccountBtn").disabled = !selected;
+      const shareButton = $("shareAccountBtn");
+      shareButton.disabled = !selected;
+      if (selected) {
+        const shared = selected.api_shared !== false;
+        shareButton.textContent = `脚本可读：${shared ? "开" : "关"}`;
+      } else {
+        shareButton.textContent = "脚本可读：-";
+      }
+      document.querySelectorAll(".account-card").forEach(card => {
+        const selected = card.dataset.openid === state.selectedOpenID;
+        card.classList.toggle("selected", selected);
+        card.setAttribute("aria-pressed", String(selected));
+      });
+    }
+
+    function renderStats() {
+      $("accountCount").textContent = String(state.accounts.length);
+      $("aliveCount").textContent = String(state.accounts.filter(item => item.status === "alive").length);
+      $("featureCount").textContent = String(state.features.length);
+      syncSelectedAccount();
+    }
+
+    function renderAccounts() {
+      const strip = $("accountStrip");
+      if (!state.accounts.length) {
+        strip.innerHTML = `<div class="empty-state">暂无账号，点击“添加账号”开始扫码。</div>`;
+        state.selectedOpenID = "";
+        renderStats();
+        return;
+      }
+
+      if (!state.accounts.some(item => item.openid === state.selectedOpenID)) {
+        state.selectedOpenID = state.accounts[0].openid;
+      }
+
+      strip.innerHTML = "";
+      for (const account of state.accounts) {
+        const name = accountName(account);
+        const cls = statusClass(account.status);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "account-card";
+        button.dataset.openid = account.openid;
+        button.setAttribute("aria-pressed", "false");
+        button.setAttribute("aria-label", `选择账号 ${name}，ID ${account.id}`);
+        button.innerHTML = `
+          <span class="avatar">
+            <img alt="" src="/accounts/avatar?ref=${encodeURIComponent(account.openid)}">
+            <span class="avatar-letter hidden">${escapeHTML(name.slice(0, 1).toUpperCase() || "Y")}</span>
+          </span>
+          <span class="account-main">
+            <span class="account-header">
+              <span class="account-name">${escapeHTML(name)}</span>
+              <span class="account-status ${cls}"><span class="status-dot"></span>${statusText(account.status)}</span>
+            </span>
+            <span class="account-meta" title="ID: ${escapeHTML(account.id)} · UIN: ${escapeHTML(account.uin ?? "-")} · ${formatChecked(account.last_checked_at)}">ID: ${escapeHTML(account.id)} · UIN: ${escapeHTML(account.uin ?? "-")} · ${formatChecked(account.last_checked_at)}</span>
+            <span class="account-openid" title="OpenID: ${escapeHTML(account.openid)}">OpenID: ${escapeHTML(account.openid)}</span>
+          </span>
+        `;
+        button.querySelector("img").addEventListener("error", event => {
+          event.currentTarget.classList.add("hidden");
+          button.querySelector(".avatar-letter").classList.remove("hidden");
+        });
+        button.addEventListener("click", () => {
+          state.selectedOpenID = account.openid;
+          syncSelectedAccount();
+          setActivity(`已选择账号：${name}`);
+        });
+        strip.appendChild(button);
+      }
+      renderStats();
+    }
+
+    function renderFeatures() {
+      const select = $("featureSel");
+      if (!state.features.length) {
+        select.innerHTML = `<option value="">暂无能力</option>`;
+        togglePayload();
+        return;
+      }
+      select.innerHTML = state.features.map(feature => {
+        const label = feature.label || feature.name;
+        return `<option value="${escapeHTML(feature.name)}" data-name="${escapeHTML(feature.name)}">${escapeHTML(label)}</option>`;
+      }).join("");
+      togglePayload();
+      renderStats();
+    }
+
+    function currentFeatureName() {
+      const option = $("featureSel").selectedOptions[0];
+      return option ? option.dataset.name || "" : "";
+    }
+
+    function currentFeature() {
+      const name = currentFeatureName();
+      return state.features.find(feature => feature.name === name) || null;
+    }
+
+    function togglePayload() {
+      const feature = currentFeatureName().toLowerCase();
+      const selected = currentFeature();
+      const needsPayload = Boolean(selected?.needsPayload);
+      const isOAuth = feature === "oauth";
+      $("payloadGroup").classList.toggle("hidden", !needsPayload);
+      $("oauthRedirectGroup").classList.toggle("hidden", !isOAuth);
+      $("oauthScopeGroup").classList.toggle("hidden", !isOAuth);
+      $("oauthStateGroup").classList.toggle("hidden", !isOAuth);
+      $("appidLabel").textContent = isOAuth ? "公众号 AppID" : "APPID";
+      $("appidInput").placeholder = isOAuth ? "wx...（18 位公众号 AppID）" : "小程序 AppID";
+    }
+
+    async function loadHealth() {
+      const pill = $("healthPill");
+      try {
+        await api("GET", "/health");
+        pill.classList.add("ok");
+        pill.classList.remove("bad");
+        pill.querySelector("span:last-child").textContent = "服务正常";
+      } catch {
+        pill.classList.add("bad");
+        pill.classList.remove("ok");
+        pill.querySelector("span:last-child").textContent = "服务异常";
+      }
+    }
+    async function loadWxcodeStatus() {
+      const pill = $("wxcodePill");
+      try {
+        const status = await api("GET", "/api/wxcode/status");
+        if (!status.enabled) {
+          pill.classList.remove("ok", "bad");
+          pill.querySelector("span:last-child").textContent = "未配置设备取码";
+          return;
+        }
+        const online = (status.endpoints || []).filter(e => e.online);
+        if (online.length > 0) {
+          pill.classList.add("ok");
+          pill.classList.remove("bad");
+          pill.querySelector("span:last-child").textContent = `设备取码在线(${online.length}/${status.endpoints.length})`;
+        } else {
+          pill.classList.add("bad");
+          pill.classList.remove("ok");
+          pill.querySelector("span:last-child").textContent = "设备取码离线";
+        }
+      } catch {
+        pill.classList.add("bad");
+        pill.classList.remove("ok");
+        pill.querySelector("span:last-child").textContent = "设备取码不可用";
+      }
+    }
+
+    async function loadAccounts() {
+      $("accountStrip").innerHTML = `<div class="empty-state">账号加载中</div>`;
+      try {
+        state.accounts = await api("GET", "/accounts");
+        renderAccounts();
+        setActivity("账号列表已加载");
+      } catch (error) {
+        $("accountStrip").innerHTML = `<div class="empty-state">账号加载失败：${escapeHTML(error.data?.detail || error.message)}</div>`;
+        setActivity("账号列表加载失败");
+      }
+    }
+
+    async function loadFeatures() {
+      renderFeatures();
+    }
+
+    function updatePanelLabels() {
+      const type = $("qingLongType").value;
+      if (type === "daidai") {
+        $("labelPanelURL").textContent = "呆呆面板地址";
+        $("qingLongURL").placeholder = "http://daidai-panel:5700";
+        $("labelClientID").textContent = "App Key";
+        $("labelClientSecret").textContent = "App Secret";
+      } else {
+        $("labelPanelURL").textContent = "青龙地址";
+        $("qingLongURL").placeholder = "http://qinglong:5700";
+        $("labelClientID").textContent = "Client ID";
+        $("labelClientSecret").textContent = "Client Secret";
+      }
+    }
+
+    async function loadMe() {
+      try {
+        const me = await api("GET", "/api/auth/me");
+        state.authEnabled = me.auth_enabled !== false;
+        state.user = me.user || null;
+      } catch {
+        state.authEnabled = false;
+        state.user = null;
+      }
+      state.isAdmin = !state.authEnabled || state.user?.role === "admin";
+      // 普通用户看不到用户管理入口与面板服务器级配置
+      $("usersEntry").hidden = !state.isAdmin;
+      $("qingLongSettings").hidden = !state.isAdmin;
+      return state.isAdmin;
+    }
+
+    async function toggleAccountShare() {
+      const account = getSelectedAccount();
+      if (!account) return;
+      const next = !(account.api_shared !== false);
+      const button = $("shareAccountBtn");
+      button.disabled = true;
+      try {
+        const result = await api("PUT", "/accounts/share", { ref: String(account.id), shared: next });
+        const index = state.accounts.findIndex(item => item.id === account.id);
+        if (index >= 0 && result.account) state.accounts[index] = result.account;
+        syncSelectedAccount();
+        setActivity(next
+          ? `账号 ${account.id} 已允许脚本读取`
+          : `账号 ${account.id} 已禁止脚本读取（/instances 与取号接口将看不到它）`);
+      } catch (error) {
+        setActivity(`设置失败：${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function loadQingLongConfig() {
+      try {
+        const config = await api("GET", "/api/qinglong/config");
+        $("qingLongType").value = config.type || "qinglong";
+        updatePanelLabels();
+        $("qingLongURL").value = config.url || "";
+        $("qingLongClientID").value = config.client_id || "";
+        $("qingLongSecret").value = "";
+        const secretLabel = config.type === "daidai" ? "App Secret" : "Client Secret";
+        $("qingLongSecret").placeholder = config.secret_configured ? "已配置，留空表示保留" : `请输入 ${secretLabel}`;
+        $("qingLongSecretNote").textContent = config.configured ? "连接参数已保存；修改时会先测试连接" : "尚未配置；保存时会先测试连接";
+      } catch (error) {
+        setActivity(`读取面板配置失败：${error.message}`);
+      }
+    }
+
+    async function saveRemark() {
+      const account = getSelectedAccount();
+      if (!account) return;
+      const button = $("saveRemarkBtn");
+      button.disabled = true;
+      try {
+        const result = await api("PUT", "/accounts/remark", { ref: String(account.id), remark: $("accountRemarkInput").value });
+        const index = state.accounts.findIndex(item => item.id === account.id);
+        state.accounts[index] = result.account;
+        renderAccounts();
+        setActivity(result.warning || "账号备注已保存");
+      } catch (error) {
+        setActivity(`备注保存失败：${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function syncQingLong() {
+      const account = getSelectedAccount();
+      if (!account) return;
+      const button = $("syncQingLongBtn");
+      button.disabled = true;
+      try {
+        const saved = await api("PUT", "/accounts/remark", { ref: String(account.id), remark: $("accountRemarkInput").value });
+        const index = state.accounts.findIndex(item => item.id === account.id);
+        state.accounts[index] = saved.account;
+        const result = await api("POST", "/api/qinglong/sync", { ref: String(account.id) });
+        renderAccounts();
+        const panelName = $("qingLongType").value === "daidai" ? "呆呆面板" : "青龙";
+        setActivity(result.added ? `账号 ${account.id} 已添加到${panelName} YYB_SERVER` : `${panelName} YYB_SERVER 已包含账号 ${account.id}`);
+      } catch (error) {
+        setActivity(`同步面板失败：${error.message}`);
+        if (error.message.includes("配置")) $("qingLongSettings").open = true;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function deleteAccount() {
+      const account = getSelectedAccount();
+      if (!account) return;
+      const label = `ID ${account.id}${account.remark ? `（${account.remark}）` : ""}`;
+      const confirmed = window.confirm(
+        `确认删除账号 ${label}？\n\n` +
+        `将同时删除：\n` +
+        `1. YYB 中该账号及登录态\n` +
+        `2. 面板 YYB_SERVER 中匹配该 ID/OpenID 的条目\n` +
+        `3. YYB 为该账号创建的专属任务\n\n` +
+        `其他账号、手工维护的内容和公共任务不会删除。此操作不可撤销。`
+      );
+      if (!confirmed) return;
+
+      const button = $("deleteAccountBtn");
+      button.disabled = true;
+      button.textContent = "删除中";
+      try {
+        const result = await api("DELETE", `/accounts?ref=${encodeURIComponent(account.id)}`);
+        state.selectedOpenID = "";
+        await loadAccounts();
+        const cleanup = result.qinglong_cleanup === "skipped"
+          ? "面板未配置，已跳过关联清理"
+          : `已清理面板环境条目 ${result.env_entries_removed} 条、专属任务 ${result.tasks_deleted} 个`;
+        setActivity(`账号 ${label} 已删除；${cleanup}`);
+      } catch (error) {
+        setActivity(`账号删除失败：${error.data?.detail || error.message}`);
+      } finally {
+        button.textContent = "删除账号";
+        button.disabled = !getSelectedAccount();
+      }
+    }
+
+    async function saveQingLongConfig() {
+      const button = $("saveQingLongBtn");
+      button.disabled = true;
+      button.textContent = "正在测试";
+      try {
+        await api("PUT", "/api/qinglong/config", { type: $("qingLongType").value, url: $("qingLongURL").value, client_id: $("qingLongClientID").value, client_secret: $("qingLongSecret").value });
+        await loadQingLongConfig();
+        const panelName = $("qingLongType").value === "daidai" ? "呆呆面板" : "青龙";
+        setActivity(`${panelName}连接测试成功，配置已保存`);
+      } catch (error) {
+        setActivity(`面板配置保存失败：${error.message}`);
+      } finally {
+        button.disabled = false;
+        button.textContent = "测试并保存";
+      }
+    }
+
+    async function clearQingLongConfig() {
+      const button = $("clearQingLongBtn");
+      button.disabled = true;
+      try {
+        await api("PUT", "/api/qinglong/config", { clear: true });
+        await loadQingLongConfig();
+        setActivity("面板连接配置已清除");
+      } catch (error) {
+        setActivity(`清除面板配置失败：${error.message}`);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function refreshAll() {
+      const button = $("refreshAllBtn");
+      button.disabled = true;
+      button.textContent = "刷新中";
+      try {
+        const result = await api("POST", "/accounts/refresh");
+        setResult(result, "存活刷新完成", false);
+        await loadAccounts();
+      } catch (error) {
+        setResult(error.data || error.message, "存活刷新失败", true);
+      } finally {
+        button.disabled = false;
+        button.textContent = "刷新存活";
+      }
+    }
+
+    async function resyncAll() {
+      const button = $("resyncAllBtn");
+      button.disabled = true;
+      button.textContent = "同步中";
+      try {
+        const result = await api("POST", "/accounts/resync");
+        setResult(result, "资料同步完成", false);
+        await loadAccounts();
+      } catch (error) {
+        setResult(error.data || error.message, "资料同步失败", true);
+      } finally {
+        button.disabled = false;
+        button.textContent = "同步资料";
+      }
+    }
+
+    async function callFeature() {
+      const feature = currentFeature();
+      const account = getSelectedAccount();
+      if (!account && feature?.requiresAccount !== false) {
+        setResult("请先选择一个账号。", "缺少账号", true);
+        return;
+      }
+
+      const endpoint = currentFeatureName();
+      const appID = $("appidInput").value.trim();
+      if (!endpoint) {
+        setResult("当前没有可调用能力。", "缺少能力", true);
+        return;
+      }
+      if (feature?.requiresAppID !== false && !appID) {
+        setResult("请输入 APPID。", "缺少 APPID", true);
+        return;
+      }
+
+      const isOAuth = endpoint.toLowerCase() === "oauth";
+      const isQRCodeAuth = feature?.name === "qrcodeauth";
+      const body = isQRCodeAuth
+        ? undefined
+        : isOAuth
+        ? {
+            ref: String(account.id),
+            appid: appID,
+            redirect_uri: $("oauthRedirectInput").value.trim(),
+            scope: $("oauthScopeInput").value,
+            state: $("oauthStateInput").value.trim()
+          }
+        : { ref: account.openid };
+      if (!isOAuth && feature?.requiresAppID !== false) body.app_id = appID;
+      if (isOAuth && !body.redirect_uri) {
+        setResult("请填写公众号回调地址。", "缺少回调地址", true);
+        return;
+      }
+      if (feature?.needsPayload) {
+        const raw = $("payloadInput").value.trim();
+        if (!raw) {
+          setResult("operateWxData 需要请求 JSON。", "缺少 payload", true);
+          return;
+        }
+        try {
+          body.payload = JSON.parse(raw);
+        } catch {
+          setResult("请求 JSON 格式不正确。", "JSON 解析失败", true);
+          return;
+        }
+      }
+
+      const button = $("callBtn");
+      button.disabled = true;
+      const startedAt = performance.now();
+      setResult("调用中，首次调用可能需要建立会话。", "请求进行中", false);
+      setActivity(`正在调用 ${endpoint}${account ? `：${accountName(account)}` : ""}`);
+
+      try {
+        const result = await api("POST", feature?.route || (isOAuth ? "/wx/oauth" : `/wxapp/${endpoint}`), body);
+        const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
+        setResult(result, `调用完成，用时 ${seconds}s`, false);
+        await loadAccounts();
+      } catch (error) {
+        setResult(error.data || error.message, `调用失败 ${error.status || ""}`.trim(), true);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    $("reloadAccountsBtn").addEventListener("click", loadAccounts);
+    $("refreshAllBtn").addEventListener("click", refreshAll);
+    $("resyncAllBtn").addEventListener("click", resyncAll);
+    $("saveRemarkBtn").addEventListener("click", saveRemark);
+    $("shareAccountBtn").addEventListener("click", toggleAccountShare);
+    $("syncQingLongBtn").addEventListener("click", syncQingLong);
+    $("deleteAccountBtn").addEventListener("click", deleteAccount);
+    $("saveQingLongBtn").addEventListener("click", saveQingLongConfig);
+    $("clearQingLongBtn").addEventListener("click", clearQingLongConfig);
+    $("featureSel").addEventListener("change", togglePayload);
+    $("callBtn").addEventListener("click", callFeature);
+    $("clearResultBtn").addEventListener("click", () => setResult("结果已清空。", "等待调用", false));
+    $("copyResultBtn").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(state.lastResult || $("resultBox").textContent);
+        setActivity("结果已复制");
+      } catch {
+        setActivity("复制失败，请手动选择结果内容");
+      }
+    });
+
+    loadHealth();
+    loadWxcodeStatus();
+    loadFeatures();
+    loadMe().then(isAdmin => {
+      loadAccounts();
+      // 面板连接配置是服务器级设置，仅管理员可读
+      if (isAdmin) loadQingLongConfig();
+    });
+    setInterval(loadHealth, 15000);
+    setInterval(loadWxcodeStatus, 30000);
+  </script>
+  <script src="/static/js/platform.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+* text=auto
+*.go text eol=lf
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.conf text eol=lf
+*.conf.example text eol=lf
+packaging/magisk/module.prop text eol=lf
+packaging/magisk/META-INF/com/google/android/* text eol=lf
+packaging/magisk/skip_mount text eol=lf

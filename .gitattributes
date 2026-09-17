@@ -1,0 +1,26 @@
+# 统一换行符：脚本和配置必须是 LF，否则容器内会以
+# "/usr/bin/env bash\r: not found" 或 "exec format error" 启动失败。
+# 不管克隆者在 Windows 上把 core.autocrlf 设成什么，这里都强制 LF。
+* text=auto
+
+*.go text eol=lf
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.example text eol=lf
+
+# 预编译网关二进制与 wxcode APK 是二进制，禁止任何换行符转换
+gateway/yyb-go-amd64 binary
+gateway/yyb-go-arm64 binary
+wxcode/*.apk binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
