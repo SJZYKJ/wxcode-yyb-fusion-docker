@@ -4,6 +4,23 @@
 > 微信扫码登录（浏览器 /scan 出二维码 → 手机微信扫码）本来就是 YYB Go 的原生能力，无需 root、
 > 无需 Xposed、无需 redroid；wxcode 模块（Xposed 注入微信进程）降级为**可选的外部设备取码端点**。
 
+## ⚡ 一键部署（推荐）
+
+```bash
+# 不用 clone：自动下载编排文件、生成访问令牌、启动并做健康检查
+curl -fsSL https://raw.githubusercontent.com/SJZYKJ/wxcode-yyb-fusion-docker/main/deploy.sh | bash
+
+# 或者 clone 后在仓库里执行
+git clone https://github.com/SJZYKJ/wxcode-yyb-fusion-docker.git
+cd wxcode-yyb-fusion-docker && ./deploy.sh
+```
+
+脚本幂等：重复执行 = 拉新镜像 + 重启，不会覆盖已有的 `.env`、令牌与数据。
+`./deploy.sh --help` 查看全部参数（端口、绑定地址、指定令牌、镜像标签、`--dry-run`、
+`--logs`、`--uninstall`）；默认会**生成并开启访问令牌**（说明见第五节）。
+
+不想用脚本，就照第三节的三行 compose 手动部署。
+
 ## 一、本质结论（为什么这么设计）
 
 从 wxcode_2.1.0.apk 解码源码（wxcode_java/）可以确认：
@@ -30,6 +47,7 @@
 
 ```
 wxcode-yyb-fusion-docker/
+├── deploy.sh               # 一键部署脚本（生成 .env → 建数据目录 → 拉镜像 → 健康检查）
 ├── compose.yaml            # 默认编排：直接拉取预构建镜像（推荐）
 ├── compose.build.yaml      # 本地构建编排：改了源码后用这个
 ├── .env.example            # 环境变量模板（WXCODE_URLS 默认留空 = 原生模式）
@@ -40,7 +58,8 @@ wxcode-yyb-fusion-docker/
 ├── Dockerfile.src          # 网关镜像（源码构建版，可选）
 ├── build-gateway.sh        # 交叉编译 gateway/yyb-go-{amd64,arm64}（改源码后重建镜像用）
 ├── NOTICE.md               # 第三方来源与许可说明
-├── README-DOCKER.md        # 本文档
+├── README.md               # 仓库首页：一键部署入口
+├── README-DOCKER.md        # 本文档（完整文档）
 ├── src/                    # 融合版完整源码（与预编译产物同源）
 │   ├── cmd/yyb-go/         # 主程序入口
 │   ├── internal/
@@ -58,7 +77,9 @@ wxcode-yyb-fusion-docker/
     └── wxcode_2.1.0.apk    # 可选：安装到已 root 手机作设备取码端点
 ```
 
-## 三、快速开始
+## 三、快速开始（手动部署）
+
+> 不想手敲就用根目录的 `./deploy.sh`（一键部署，见开头）；下面两种方式适合想自己控制的场景。
 
 ### 方式 A：拉取预构建镜像（推荐）
 
@@ -203,6 +224,12 @@ GATEWAY_HEADERS = {"Authorization": f"Bearer {GATEWAY_TOKEN}"} if GATEWAY_TOKEN 
 # 然后把 GATEWAY_HEADERS 合并进 requests 的 headers 参数
 ```
 
+> 顺丰中秋 / sfsy日常版 / 移动云盘 三个青龙脚本**已内置该适配**：只要在青龙环境变量里
+> 配上 `YYB_API_TOKEN`（与网关 `.env` 里是同一个值），脚本会自动在
+> `/instances`、`/wxapp/getCode`、`/login` 请求上带 `Authorization: Bearer`；
+> 令牌缺失或写错时脚本直接打印 401 提示并停止，不会静默失败或空转重试。
+> 不配 = 网关未开鉴权，行为与旧版一致。
+
 ### 哪些接口**不会**被令牌拦住
 
 | 接口 | 说明 |
@@ -271,7 +298,7 @@ v4.0.0 起改为**单服务纯 Docker**：
 - **普通用户点「添加账号/运行管理」被跳到个人设置？** v4.2.2 已修复：这些页面不再要求管理员权限，普通用户可正常使用，只是账号列表里只有自己的账号。
 - **普通用户扫码添加的账号，管理员能看到吗？** 不能。为保护账号隐私，账号只对其归属用户可见；管理员能看到的是"未归属"（老数据）和自己名下的账号。如需统一管理，可由该用户自行在控制台操作，或将其角色提升为 `admin`。
 - **脚本还能读到所有账号吗？** 能（v4.2.2 起默认不变）。公开接口不做归属过滤，只是会跳过拥有者关闭了「脚本可读」的账号。反之，某个用户不想让自己的账号被脚本读到，在工作台选中该账号点「脚本可读：关」即可。
-- **公网部署安全吗？** 默认状态下**不安全**：取码接口不鉴权，端口通了就能列出全部 openid 并取码。请把 `YYB_API_TOKEN` 填上（见第五节），或只在反代后面暴露并加白名单。
+- **公网部署安全吗？** 用 `deploy.sh` 部署是**安全的**——它默认自动生成并开启 `YYB_API_TOKEN`。手动 `docker compose up -d` 且 `.env` 里令牌留空时**不安全**：取码接口不鉴权，端口通了就能列出全部 openid 并取码，请把 `YYB_API_TOKEN` 填上（见第五节），或只在反代后面暴露并加白名单。
 - **填了 YYB_API_TOKEN 之后脚本报 401？** 给脚本的网关请求加上 `Authorization: Bearer <令牌>` 或 `X-API-Token: <令牌>` 请求头，也可以直接在 URL 上拼 `?token=<令牌>`，见第五节。
 - **填了令牌后浏览器登不上控制台？** 不会。`POST /login`（带 `username`）与登录页始终放行，工作台用会话 Cookie 访问接口也不受令牌限制。
 - **改了源码怎么重新出镜像？** ① `./build-gateway.sh`（交叉编译 amd64+arm64）→ ② `cp -r src/resource/templates/. gateway/resource/templates/` → ③ `docker compose -f compose.build.yaml up -d --build`。只改前端模板的话第①步可以跳过。
