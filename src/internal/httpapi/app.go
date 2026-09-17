@@ -275,12 +275,15 @@ func (a *App) Handler() http.Handler {
 	// original on-device NanoHTTPD service).
 	api.Any("/whoami", gin.WrapF(a.handleWXCompatWhoami))
 	api.Any("/instances", gin.WrapF(a.handleWXCompatInstances))
-	// 设备 hook 的引导配置与心跳注册同样纳入鉴权：注册接口会写 hookInstances，
-	// 而 deviceEndpoints() 会把注册进来的端口拼成 http://127.0.0.1:<port>
-	// 供取码链路请求——不鉴权就等于对外开放了一个 SSRF/取码源劫持点。
-	api.Any("/wxcode/hookcfg", gin.WrapF(a.handleHookCfg))
-	api.Any("/wxcode/config", gin.WrapF(a.handleHookCfg))
-	api.Any("/wxcode/register", gin.WrapF(a.handleWXCodeRegister))
+	// 设备 hook 的引导配置与心跳注册用更严格的中间件：注册接口会写全局
+	// hookInstances，而 deviceEndpoints() 会把注册进来的端口拼成
+	// http://127.0.0.1:<port> 供取码链路请求——放开就等于对外开放了
+	// 一个 SSRF/取码源劫持点。故只接受 API 令牌或管理员会话，
+	// 普通用户的浏览器会话同样会被拒。
+	device := router.Group("/", a.requireTokenOrAdminSession())
+	device.Any("/wxcode/hookcfg", gin.WrapF(a.handleHookCfg))
+	device.Any("/wxcode/config", gin.WrapF(a.handleHookCfg))
+	device.Any("/wxcode/register", gin.WrapF(a.handleWXCodeRegister))
 	api.Any("/wx/oauth", gin.WrapF(a.handlePublicOAuth))
 	api.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
 	api.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))
@@ -655,7 +658,7 @@ func (a *App) handleGetCode(w http.ResponseWriter, r *http.Request) {
 		fallback bool
 	)
 	if body.Ref != "" {
-		acc, err := a.resolveAccount(r.Context(), body.Ref)
+		acc, err := a.resolveReadableAccount(r, body.Ref)
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
@@ -678,7 +681,7 @@ func (a *App) handleGetCode(w http.ResponseWriter, r *http.Request) {
 			result, source, fallback = dev, "device", false
 		} else {
 			primaryErr := err
-			if nat, oid, natErr := a.nativeCodeWithRef(r.Context(), "", body.AppID); natErr == nil {
+			if nat, oid, natErr := a.nativeCodeWithRef(r, "", body.AppID); natErr == nil {
 				result, openid, source, fallback = nat, oid, "native", true
 			} else {
 				writeError(w, http.StatusBadGateway, "device failed: "+primaryErr.Error()+"; native failed: "+natErr.Error())

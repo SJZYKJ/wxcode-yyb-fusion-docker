@@ -3,9 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,7 +88,7 @@ func (a *App) handleWXLoginDevice(w http.ResponseWriter, r *http.Request) {
 	//    An optional ref query param selects the account explicitly; without
 	//    one the default account is picked automatically (see defaultAccount).
 	ref := strings.TrimSpace(r.URL.Query().Get("ref"))
-	native, openid, err := a.nativeCodeWithRef(r.Context(), ref, appID)
+	native, openid, err := a.nativeCodeWithRef(r, ref, appID)
 	if err != nil {
 		writeRawJSON(w, http.StatusOK, map[string]any{"err": -1, "msg": err.Error()})
 		return
@@ -172,10 +170,13 @@ func (a *App) handleWXCompatInstances(w http.ResponseWriter, r *http.Request) {
 			"port":        inst.Port,
 		})
 	}
-	// 公开接口：列出“允许脚本读取”的全部账号（含管理员与其他用户名下的），
-	// 不按归属过滤，保证既有脚本（顺丰/移动云盘等）能读到所有 code；
-	// 拥有者在控制台关掉“允许脚本读取”的账号会从这里消失。
-	accounts, err := a.db.ListSharedAccounts(r.Context())
+	// 可见范围按凭据类型分流（见 access.go 顶部注释）：
+	//   - 带浏览器会话：控制台可见范围，普通用户只列归属自己的账号；
+	//   - 带 API 令牌 / 未启用鉴权：脚本语义，列出全部 api_shared=1 的账号，
+	//     保证既有脚本（顺丰/移动云盘等）仍能读到所有 code。
+	// 早期版本无条件查 ListSharedAccounts，于是任何登录用户都能列出
+	// 全部 openid（含管理员名下的），属横向越权，故改用 listReadableAccounts。
+	accounts, err := a.listReadableAccounts(r)
 	if err != nil {
 		writeRawJSON(w, http.StatusInternalServerError, map[string]any{"err": -500, "msg": err.Error()})
 		return
@@ -246,7 +247,7 @@ func (a *App) handleUnifiedCode(w http.ResponseWriter, r *http.Request) {
 			result = dev
 		} else {
 			primaryErr = err
-			if nat, oid, natErr := a.nativeCodeWithRef(r.Context(), body.Ref, body.AppID); natErr == nil {
+			if nat, oid, natErr := a.nativeCodeWithRef(r, body.Ref, body.AppID); natErr == nil {
 				source, fallback, openid = "native", true, oid
 				result = nat
 			} else {
@@ -254,7 +255,7 @@ func (a *App) handleUnifiedCode(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		nat, oid, err := a.nativeCodeWithRef(r.Context(), body.Ref, body.AppID)
+		nat, oid, err := a.nativeCodeWithRef(r, body.Ref, body.AppID)
 		if err == nil {
 			source, fallback, openid = "native", false, oid
 			result = nat
@@ -280,13 +281,18 @@ func (a *App) handleUnifiedCode(w http.ResponseWriter, r *http.Request) {
 // nativeCodeWithRef resolves the native account (explicit ref, or the default
 // account when no ref is given) and exchanges a code through the login_buffer
 // protocol.
-func (a *App) nativeCodeWithRef(ctx context.Context, ref, appID string) (map[string]any, string, error) {
+//
+// 账号可见性按凭据类型判定（会话按归属、令牌按 api_shared），所以这里必须
+// 接收 *http.Request 而不是裸 context —— 否则会话请求会被当成公开 API 调用，
+// 从而取到他人（含管理员）的 code。
+func (a *App) nativeCodeWithRef(r *http.Request, ref, appID string) (map[string]any, string, error) {
+	ctx := r.Context()
 	var acc *store.WechatAccount
 	var err error
 	if ref != "" {
-		acc, err = a.resolveAccount(ctx, ref)
+		acc, err = a.resolveReadableAccount(r, ref)
 	} else {
-		acc, err = a.defaultAccount(ctx)
+		acc, err = a.defaultAccountFor(r)
 	}
 	if err != nil {
 		return nil, "", err
@@ -298,34 +304,37 @@ func (a *App) nativeCodeWithRef(ctx context.Context, ref, appID string) (map[str
 	return result, acc.OpenID, nil
 }
 
-func (a *App) resolveAccount(ctx context.Context, ref string) (*store.WechatAccount, error) {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return nil, fmt.Errorf("ref is required")
-	}
-	acc, err := a.db.ResolveSharedAccount(ctx, ref)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("account not found: %s", ref)
-		}
-		if errors.Is(err, store.ErrAccountNotShared) {
-			return nil, fmt.Errorf("account not shared to api: %s", ref)
-		}
-		return nil, err
-	}
-	return acc, nil
-}
-
 // defaultAccount resolves the native account for a ref-less request. A single
 // configured account is used directly; with several accounts the most recently
 // active one is picked automatically (alive first, then latest updated) so
 // wxcode-protocol callers that never send ref keep working. Callers that need
 // a specific account should pass ref explicitly.
+// defaultAccount 公开 API（令牌）语义下的默认账号：全部 api_shared=1 的账号里挑。
 func (a *App) defaultAccount(ctx context.Context) (*store.WechatAccount, error) {
 	accounts, err := a.db.ListSharedAccounts(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return pickDefaultAccount(accounts)
+}
+
+// defaultAccountFor 按请求身份挑默认账号：
+//   - 带浏览器会话：只在控制台可见范围内挑，普通用户不会因为“默认账号”
+//     而取到别人的 code；
+//   - 无会话（API 令牌 / 未启用鉴权）：与 defaultAccount 相同。
+func (a *App) defaultAccountFor(r *http.Request) (*store.WechatAccount, error) {
+	if currentUser(r) == nil {
+		return a.defaultAccount(r.Context())
+	}
+	accounts, err := a.listReadableAccounts(r)
+	if err != nil {
+		return nil, err
+	}
+	return pickDefaultAccount(accounts)
+}
+
+// pickDefaultAccount 从候选账号里挑默认项：单个直接用，多个则选最近活跃的。
+func pickDefaultAccount(accounts []*store.WechatAccount) (*store.WechatAccount, error) {
 	switch len(accounts) {
 	case 0:
 		return nil, fmt.Errorf("no native WeChat accounts configured (scan a QR in the console first)")

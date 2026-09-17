@@ -253,7 +253,7 @@ GATEWAY_HEADERS = {"Authorization": f"Bearer {GATEWAY_TOKEN}"} if GATEWAY_TOKEN 
 | `POST /login`（带 `username`） | Web 控制台登录，否则配了令牌就没人能登录 |
 | `GET /login`（不带 `appId`） | 登录页面本身 |
 | `/register`、`/logout` | 注册页与登出（注册另有开关，见下） |
-| 任何带**有效控制台会话 Cookie** 的请求 | 工作台「调用配置」就是在浏览器里带会话调 `/wxapp/*`、`/wx/code` 的 |
+| 任何带**有效控制台会话 Cookie** 的请求 | 工作台「调用配置」就是在浏览器里带会话调 `/wxapp/*`、`/wx/code` 的。**会话不等于令牌**：会话请求按控制台权限过滤，普通账号只能读到归属自己的账号（见下方「会话 ≠ 令牌」） |
 
 > `/wxcode/*`（设备 hook 引导配置与心跳注册）在 v4.2.4 起**也纳入令牌保护**：
 > 注册接口写入的端口会被 `deviceEndpoints()` 当作 `http://127.0.0.1:<port>` 去请求，
@@ -273,6 +273,25 @@ GATEWAY_HEADERS = {"Authorization": f"Bearer {GATEWAY_TOKEN}"} if GATEWAY_TOKEN 
 | 会话 Cookie | `HttpOnly` + `SameSite=Lax` | 请求为 HTTPS（直连 TLS 或 `X-Forwarded-Proto: https`）时自动加 `Secure`；也可 `YYB_COOKIE_SECURE=true` 强制。 |
 | 登录 `next` 参数 | 只接受站内路径 | `//host`、`/\host` 与控制字符注入一律收敛到 `/`，无开放重定向。 |
 | 容器权限 | 非 root（`yyb`） | `cap_drop: ALL` + `no-new-privileges`，仅保留启动时修数据目录权限所需的 5 个 capability。 |
+
+### 会话 ≠ 令牌：两条通道的可见范围不同（v4.2.5）
+
+同一个取码接口，**按你用什么凭据**决定能看到/取到哪些账号：
+
+| 凭据 | 权限模型 | 可见 / 可取的范围 |
+|---|---|---|
+| API 令牌（`Authorization` / `X-API-Token` / `?token=`） | 公开 API（脚本通道） | 全部 `api_shared=1` 的账号，**不做归属过滤** —— 青龙脚本走这条，行为与以前完全一致 |
+| 浏览器会话 Cookie | 控制台（按归属） | 管理员：全部账号；普通账号：**只有归属自己的账号** |
+
+> ⚠️ **v4.2.4 及更早版本存在横向越权**：任何登录用户（哪怕是最普通的账号）用浏览器
+> 打开 `/instances` 就能列出**全部**账号的 openid，还能借 `api_shared` 默认开启按 `ref`
+> 取到他人（含管理员）的 code。原因是「有效会话」被当成与令牌等价的凭据放行，却没有把
+> 会话身份注入请求上下文，下游 handler 于是按「无会话的公开 API 调用」处理。v4.2.5 已按
+> 上表修正；越权请求返回 `account not found`，不泄露账号是否存在或归属。
+>
+> 另外 `/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 现在只接受
+> **令牌或管理员会话**（未认证 401、普通会话 403）—— 它们写的是全局取码源端口表，
+> 普通用户不应能篡改。
 
 ### ⚠️ 一个组合要注意
 

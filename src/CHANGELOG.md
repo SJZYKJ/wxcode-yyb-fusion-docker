@@ -9,6 +9,14 @@
 > 命中就整个 workflow 不触发。所以「在正文里解释为什么**没有**加 `[skip ci]`」
 > 会导致这一行文字把构建也一起跳过——想触发构建时，正文里也别出现这些字面量。
 
+- **v4.2.5 · 修复横向越权（重要）**：登录控制台后，任何**普通账号**都能在浏览器里直接打开 `/instances` 拿到**全部**账号的 openid（含管理员名下的），并可用同一个会话按 `ref` 取到他人（含管理员）的 code —— 因为 `api_shared` 默认开启。根因是上一版的 `requireAPIToken` 把「有效的浏览器会话」当成与 API 令牌等价的凭据放行，却**不把会话身份注入请求上下文**，于是下游 handler 一律按「无会话的公开 API 调用」处理（`isAdminRequest` 恒为 true、`ListSharedAccounts` 不过滤归属）。
+  现改为按**凭据类型**决定权限模型：
+  - **API 令牌** → 公开 API 语义：不做归属过滤，可见性由每个账号的 `api_shared` 开关决定（青龙脚本行为完全不变）；
+  - **浏览器会话** → 控制台语义：管理员全可读，普通用户只能读写归属自己的账号。
+
+  具体改动：新增 `browserSessionUser`（会话识别 + 身份注入，`YYB_ALLOW_NO_AUTH` 模式下同样注入，避免退回「人人都看全部」）、`listReadableAccounts`、`resolveReadableAccount`、`defaultAccountFor`、`pickDefaultAccount`；`canReadAccountViaAPI` 改为会话走 `canAccessAccount`、令牌走 `APIShared`；`handleWXCompatInstances`、`nativeCodeWithRef`、`/wxapp/getCode`、`/login` 取码分支全部改走新入口，不再直接调 `db.ListSharedAccounts` / `db.ResolveSharedAccount`。越权请求对会话一律回 `account not found`，不泄露账号是否存在/归属。
+- v4.2.5 · 收窄设备侧接口：新增 `requireTokenOrAdminSession`，`/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 只接受 API 令牌或**管理员**会话。这三条写的是全局 hook 端口表（其端口会被 `deviceEndpoints()` 拼成 `http://127.0.0.1:<port>` 作为取码源），普通用户的会话不应能篡改。未认证 401、普通会话 403、令牌或管理员 200。
+- v4.2.5 · 新增回归测试 `internal/httpapi/security_session_test.go`：普通会话 `/instances` 只能看到自己的账号、管理员与令牌看全部、普通会话不能按 `ref` 取他人 code、`resolveReadableAccount` 按凭据类型判定、无 `ref` 时的默认账号不越界、设备侧接口权限矩阵（含匿名 401 / 普通会话 403 / 管理员 200 / 令牌 200）。
 - 安全加固：公开取码接口由「可选鉴权」改为 **fail-closed**。新增 `internal/httpapi/security.go` 的 `resolveAPIToken`：`YYB_API_TOKEN` 未配置时不再放行，而是优先复用数据库 `app_settings.api_token` 里已有的令牌（跟随数据卷持久化，容器重启/升级不变），没有就生成 256bit 随机令牌并写回 + 打印到启动日志。**只有显式设置 `YYB_ALLOW_NO_AUTH=true` 才会真正关闭鉴权**（启动日志有醒目警告）。
 - 安全加固：`/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 从「始终开放」移入访问令牌保护组。原因是注册接口写入的端口会被 `deviceEndpoints()` 拼成 `http://127.0.0.1:<port>` 去请求，未鉴权时等于对外开放了一个 SSRF / 取码源劫持点。
 - 安全加固：公开注册默认**关闭**（`RegistrationEnabled` 缺省值由 true 改为 false）。新增 `registrationAllowed`：库中还没有任何账号时，仅允许**内网/回环/CGNAT 地址**完成首个管理员注册，公网来源返回 403 并提示改用 `YYB_ADMIN_USER`/`YYB_ADMIN_PASSWORD`；新增 `YYB_ALLOW_REGISTRATION=true` 显式开放公开注册。堵住「实例刚暴露就被陌生人抢注管理员」（首个注册者自动成为 admin）。
