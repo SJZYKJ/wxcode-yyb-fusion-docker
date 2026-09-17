@@ -19,7 +19,7 @@
       <button class="btn primary" id="submit" type="submit">登录</button>
     </form>
     <p class="auth-foot" id="registerLink"><a href="/register">创建用户账号</a></p>
-    <p class="auth-meta"><span>当前版本 <b class="app-version">v7</b></span><span class="meta-sep" aria-hidden="true">·</span><a href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">个人主页</a></p>
+    <p class="auth-meta"><span>当前版本 <b class="app-version">—</b></span><span class="meta-sep" aria-hidden="true">·</span><a href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">个人主页</a></p>
   </div></section>
   <section class="auth-context"><div class="context-inner">
     <div class="context-kicker">Self-hosted operations</div>
@@ -29,7 +29,7 @@
     <div class="changelog">
       <div class="changelog-head">
         <h3>版本更新</h3>
-        <span class="changelog-now">当前版本 <b class="app-version">v7</b></span>
+        <span class="changelog-now">当前版本 <b class="app-version">—</b></span>
       </div>
       <ol class="changelog-list">
         <li>
@@ -69,7 +69,7 @@ document.querySelector('.reveal').onclick=e=>{const p=$('password'),show=p.type=
 $('form').onsubmit=async e=>{e.preventDefault();$('error').textContent='';$('submit').disabled=true;try{const params=new URLSearchParams(location.search),response=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,password:$('password').value,next:params.get('next')||'/'})}),json=await response.json();if(!response.ok||json.code!==0)throw new Error(json.msg||'登录失败');location.href=json.data.next||'/'}catch(error){$('error').textContent=error.message;$('submit').disabled=false}};
 if(new URLSearchParams(location.search).get('registration')==='disabled'){$('error').textContent='管理员已关闭新用户注册';$('registerLink').hidden=true}
 // 当前版本号取自镜像内的 /static/version.json（构建时由 VERSION 构建参数写入）。
-// 取不到就保留页面里的兜底值，不影响登录。
+// 这里故意不写死版本号：取不到就保持占位符「—」，这样发版后不用回来改模板。
 fetch('/static/version.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{const v=d&&typeof d.version==='string'?d.version.trim():'';if(!v)return;document.querySelectorAll('.app-version').forEach(el=>{el.textContent=v})}).catch(()=>{});
 </script>
 </body>
