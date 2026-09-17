@@ -14,7 +14,7 @@ import (
 
 func TestPublicOAuthReturnsAuthorizationURL(t *testing.T) {
 	t.Setenv("GIN_MODE", "test")
-	app, err := NewApp(Config{ResourceRoot: t.TempDir(), RequestTimeout: time.Second, QRSessionTTL: time.Minute})
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), RequestTimeout: time.Second, QRSessionTTL: time.Minute, AllowNoAuth: true})
 	if err != nil {
 		t.Fatal(err)
 	}

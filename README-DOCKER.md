@@ -186,20 +186,31 @@ curl -b cookie.txt -X PUT http://127.0.0.1:8088/accounts/share \
   -H 'Content-Type: application/json' -d '{"ref":"wx_xxx","shared":false}'
 ```
 
-## 五、公开接口访问令牌（v4.2.3）
+## 五、公开接口访问令牌（v4.2.3 引入，v4.2.4 改为强制）
 
-取码类接口（`/login` 取码分支、`/instances`、`/whoami`、`/wxapp/*`、`/wx/*`、`/openapi.json`）
-默认**不做鉴权**——这是为了让青龙脚本能直接调用。代价是：**只要端口能从外部访问，
-任何人都能列出全部 openid 并取到 code**。
+取码类接口（`/login` 取码分支、`/instances`、`/whoami`、`/wxapp/*`、`/wx/*`、
+`/wxcode/*`、`/openapi.json`）**默认就必须带访问令牌**（fail-closed）。
 
-如果你的网关映射到了公网（或不可信内网），打开访问令牌即可封住这个口子：
+`YYB_API_TOKEN` 留空时不会裸奔，而是走这套自动流程：
+
+1. 启动时读取数据库里已有的令牌（`app_settings.api_token`，跟随数据卷持久化）；
+2. 没有就生成一个 256bit 随机令牌、写回数据库，并打印到容器日志：
+
+```bash
+docker compose logs | grep -A6 "已自动生成 API 访问令牌"
+```
+
+因此**容器重启、镜像升级都不会换令牌**，青龙里的 `YYB_API_TOKEN` 配一次即可。
+
+想指定令牌就写进 `.env`（显式配置优先级最高，会覆盖数据库里的值）：
 
 ```bash
 # .env
 YYB_API_TOKEN=<一个足够随机的长字符串>     # 生成：openssl rand -hex 24
 ```
 
-`YYB_API_TOKEN` **留空时行为与旧版本完全一致**，所以升级不会弄坏现有部署。
+只有显式设置 `YYB_ALLOW_NO_AUTH=true` 才会真正关闭鉴权（启动日志会有醒目警告），
+这是给「完全可信内网 / 前面已有强鉴权反代」留的逃生舱。
 
 ### 脚本侧怎么带令牌
 
@@ -216,6 +227,8 @@ curl -H "X-API-Token: $YYB_API_TOKEN" 'http://host:8088/login?appId=wxaa3a999db5
 curl "http://host:8088/instances?token=$YYB_API_TOKEN"
 ```
 
+> 前两种更安全：`?token=` 会出现在 Web 服务器访问日志、浏览器历史与 `Referer` 里。
+
 Python（青龙脚本）里通常是加一行默认头：
 
 ```python
@@ -225,30 +238,46 @@ GATEWAY_HEADERS = {"Authorization": f"Bearer {GATEWAY_TOKEN}"} if GATEWAY_TOKEN 
 ```
 
 > 顺丰中秋 / sfsy日常版 / 移动云盘 三个青龙脚本**已内置该适配**：只要在青龙环境变量里
-> 配上 `YYB_API_TOKEN`（与网关 `.env` 里是同一个值），脚本会自动在
+> 配上 `YYB_API_TOKEN`（与网关里是同一个值），脚本会自动在
 > `/instances`、`/wxapp/getCode`、`/login` 请求上带 `Authorization: Bearer`；
 > 令牌缺失或写错时脚本直接打印 401 提示并停止，不会静默失败或空转重试。
-> 不配 = 网关未开鉴权，行为与旧版一致。
 
 ### 哪些接口**不会**被令牌拦住
 
 | 接口 | 说明 |
 |---|---|
 | `/health` | 容器健康检查，必须永远开放 |
+| `/static/*` | 登录页等静态资源 |
 | `POST /login`（带 `username`） | Web 控制台登录，否则配了令牌就没人能登录 |
 | `GET /login`（不带 `appId`） | 登录页面本身 |
-| `/register`、`/logout` | 注册页与登出 |
-| `/wxcode/*` | 已 root 手机上 hook 的引导配置，设备侧调用 |
+| `/register`、`/logout` | 注册页与登出（注册另有开关，见下） |
 | 任何带**有效控制台会话 Cookie** 的请求 | 工作台「调用配置」就是在浏览器里带会话调 `/wxapp/*`、`/wx/code` 的 |
+
+> `/wxcode/*`（设备 hook 引导配置与心跳注册）在 v4.2.4 起**也纳入令牌保护**：
+> 注册接口写入的端口会被 `deviceEndpoints()` 当作 `http://127.0.0.1:<port>` 去请求，
+> 不鉴权等于对外开放了一个取码源劫持/SSRF 点。手机端 hook 若需调用，请在 URL 上带
+> `?token=`；**推荐直接用 `WXCODE_URLS` 静态配置设备端点**（Docker 部署的正常做法）。
 
 > 判定逻辑与 `/login` 自身的分发一致（有 `username` 且无 `app_id` 才算控制台登录），
 > 因此无法靠同时带上 `app_id` 绕过取码鉴权。令牌比较使用常量时间函数。
 
+### 其它安全默认值（v4.2.4）
+
+| 项目 | 默认 | 说明 |
+|---|---|---|
+| 公开注册 | **关闭** | 库中无账号时，仅允许**内网/回环地址**完成首个管理员注册；公网来源返回 403。要公开注册设 `YYB_ALLOW_REGISTRATION=true`，或用 `YYB_ADMIN_USER`/`YYB_ADMIN_PASSWORD` 预先指定管理员。 |
+| 登录限速 | 账号 10 次 / IP 8 次，15 分钟窗口 | 双通道计数，只伪造 IP 或只打单个账号都绕不过去；计数表有上限，不会被刷爆内存。 |
+| `X-Forwarded-For` | **不信任** | 只有 `YYB_TRUST_PROXY=true` 才采信，供反代场景使用。直连暴露时保持默认，否则伪造该头即可绕过限速。 |
+| 会话 Cookie | `HttpOnly` + `SameSite=Lax` | 请求为 HTTPS（直连 TLS 或 `X-Forwarded-Proto: https`）时自动加 `Secure`；也可 `YYB_COOKIE_SECURE=true` 强制。 |
+| 登录 `next` 参数 | 只接受站内路径 | `//host`、`/\host` 与控制字符注入一律收敛到 `/`，无开放重定向。 |
+| 容器权限 | 非 root（`yyb`） | `cap_drop: ALL` + `no-new-privileges`，仅保留启动时修数据目录权限所需的 5 个 capability。 |
+
 ### ⚠️ 一个组合要注意
 
-令牌校验靠的是「公开接口」这个前提。如果你把鉴权整个关掉（`YYB_AUTH_DRIVER=none`），
-浏览器就没有会话可用，此时工作台的「调用配置」也会被令牌拦住。
-**建议保持默认的 `YYB_AUTH_DRIVER=sqlite`**；确实要关鉴权时，请直接用 `curl` 带令牌调用取码接口。
+浏览器会话是被令牌放行的条件之一。如果你把 Web 鉴权整个关掉
+（`YYB_AUTH_DRIVER=none`），浏览器就没有会话可用，此时工作台的「调用配置」
+也会被令牌拦住。**建议保持默认的 `YYB_AUTH_DRIVER=sqlite`**；
+确实要关鉴权时，请直接用 `curl` 带令牌调用取码接口。
 
 ## 六、默认端点说明（127.0.0.1:8089）
 
@@ -283,7 +312,14 @@ v4.0.0 起改为**单服务纯 Docker**：
 - wxcode 仅作为可选外部设备端点（手机本来就能装），不引入容器依赖；
 - 镜像内仍内置 wxcode_2.1.0.apk（`/app/wxcode/`），供需要设备通道时取出安装。
 
-- v4.2.3：**公开接口可选访问令牌**——新增 `YYB_API_TOKEN`，填了就要求取码接口（`/login` 取码分支、`/instances`、`/whoami`、`/wxapp/*`、`/wx/*`、`/openapi.json`）带 `Authorization: Bearer` / `X-API-Token` / `?token=` 令牌或有效的控制台会话，留空则行为与旧版完全一致；`/health`、网页登录（`POST /login` 带 `username`）、`/wxcode/*` 始终放行。同时把部署编排拆成 `compose.yaml`（拉镜像）与 `compose.build.yaml`（本地构建），数据目录改为可用 `DATA_DIR` 覆盖的相对路径，并新增 GitHub Actions 发布流水线（amd64+arm64）。
+- v4.2.4：**安全加固（默认即安全）**——
+  ①取码接口改为 fail-closed：`YYB_API_TOKEN` 未配置时自动生成 256bit 令牌并写入 `app_settings`（跟随数据卷持久化，重启不变），启动日志醒目打印，不再存在「无鉴权」窗口；只有显式 `YYB_ALLOW_NO_AUTH=true` 才关闭鉴权。
+  ②`/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 纳入令牌保护（注册接口写入的端口会被 `deviceEndpoints()` 当取码源请求，不鉴权等于开放 SSRF/取码源劫持点）。
+  ③公开注册默认关闭；库中无账号时仅允许内网/回环地址完成首个管理员注册，公网来源 403，堵住「公网抢注管理员」；新增 `YYB_ALLOW_REGISTRATION=true` 显式开放。
+  ④登录失败限速改为「账号 + 来源 IP」双通道（10 次 / 8 次，15 分钟窗口）并给计数表加上限；默认不再信任 `X-Forwarded-For`，新增 `YYB_TRUST_PROXY=true` 供反代场景显式开启。
+  ⑤修复登录 `next` 参数的开放重定向（`/\host` 这类反斜杠变体此前可跳出站外）。
+  ⑥会话 Cookie 在 HTTPS（含 `X-Forwarded-Proto: https`）下自动带 `Secure`。
+- v4.2.3：**公开接口可选访问令牌**——新增 `YYB_API_TOKEN`，填了就要求取码接口（`/login` 取码分支、`/instances`、`/whoami`、`/wxapp/*`、`/wx/*`、`/openapi.json`）带 `Authorization: Bearer` / `X-API-Token` / `?token=` 令牌或有效的控制台会话，留空则行为与旧版完全一致；`/health`、网页登录（`POST /login` 带 `username`）、`/wxcode/*` 始终放行（`/wxcode/*` 在 v4.2.4 起改为需要令牌）。同时把部署编排拆成 `compose.yaml`（拉镜像）与 `compose.build.yaml`（本地构建），数据目录改为可用 `DATA_DIR` 覆盖的相对路径，并新增 GitHub Actions 发布流水线（amd64+arm64）。
 - v4.2.2：**多用户账号隔离**——普通用户不再被重定向到个人设置页，可正常使用工作台/扫码添加/运行管理；账号按 `owner_user_id` 归属，普通用户只能看到并管理自己扫码添加的账号，管理员看全部；新增账号级「脚本可读」开关（`api_shared`），公开取码接口（`/login`、`/instances`、`/wxapp/*`）默认仍可读全部账号，拥有者可单独关闭某个账号的对外读取。同时修复 `internal/httpapi` 测试因 `t.Context()` 需要 go1.24 而无法编译的问题。
 - v4.2.1：修复部署时 SQLite `unable to open database file: out of memory (14)`——bind-mount 数据目录（./data/*）属主为 root，非 root 的 yyb 用户无法写入；新增 entrypoint 以 root 启动并自动修复数据目录权限后降权运行，compose 保留最小能力集（CHOWN/FOWNER/DAC_OVERRIDE/SETUID/SETGID）。
 - v4.2.0：修复多原生账号时 `multiple native accounts configured` 报错——`GET /login?appId=` 无设备回退原生取码时自动选用「存活（alive）优先、其次最近更新」的账号，响应带 `openid` 标明实际账号；支持 `&ref=<openid|id>` 显式指定账号。
@@ -294,12 +330,16 @@ v4.0.0 起改为**单服务纯 Docker**：
 - **WXCODE_URLS 留空时 /login?appId= 能用吗？** 能（v4.1.0 起）：设备通道不可达时自动回退原生扫码登录，响应保持 wxcode 格式（err/msg/appId/status/code/codeType/codeLength），客户端无需改动；没有 root 手机也能用。多账号时自动选存活/最近更新账号，响应 `openid` 标明实际账号；需指定账号可传 `&ref=<openid|id>`。
 - **/api/wxcode/status 显示 127.0.0.1:8089 offline？** 正常，同上；显式配置 WXCODE_URLS 后可看到手机端在线状态。
 - **没有 root 手机能不能用？** 能。原生扫码登录完全够用，wxcode 设备通道只是锦上添花。
-- **面板登录不上？** 首次访问 / 注册的账号自动成为管理员；如需关闭鉴权可设 `YYB_AUTH_DRIVER=none`。
+- **面板登录不上？** 首个管理员从**内网**访问 `/register` 注册即可（自动成为管理员，v4.2.4 起公网来源会被拒绝）；也可以在 `.env` 里设 `YYB_ADMIN_USER` / `YYB_ADMIN_PASSWORD` 后重启，网关会自动创建该管理员。完全不需要 Web 鉴权时可设 `YYB_AUTH_DRIVER=none`（注意：此时工作台的「调用配置」会被访问令牌拦住，见第五节）。
 - **普通用户点「添加账号/运行管理」被跳到个人设置？** v4.2.2 已修复：这些页面不再要求管理员权限，普通用户可正常使用，只是账号列表里只有自己的账号。
 - **普通用户扫码添加的账号，管理员能看到吗？** 不能。为保护账号隐私，账号只对其归属用户可见；管理员能看到的是"未归属"（老数据）和自己名下的账号。如需统一管理，可由该用户自行在控制台操作，或将其角色提升为 `admin`。
 - **脚本还能读到所有账号吗？** 能（v4.2.2 起默认不变）。公开接口不做归属过滤，只是会跳过拥有者关闭了「脚本可读」的账号。反之，某个用户不想让自己的账号被脚本读到，在工作台选中该账号点「脚本可读：关」即可。
-- **公网部署安全吗？** 用 `deploy.sh` 部署是**安全的**——它默认自动生成并开启 `YYB_API_TOKEN`。手动 `docker compose up -d` 且 `.env` 里令牌留空时**不安全**：取码接口不鉴权，端口通了就能列出全部 openid 并取码，请把 `YYB_API_TOKEN` 填上（见第五节），或只在反代后面暴露并加白名单。
+- **公网部署安全吗？** v4.2.4 起**默认安全**：取码接口强制鉴权（令牌未配置会自动生成并落库，不是裸奔），公开注册默认关闭且首个管理员只能从内网注册，登录限速不可被伪造 `X-Forwarded-For` 绕过。仅当你显式设置 `YYB_ALLOW_NO_AUTH=true` 或 `YYB_ALLOW_REGISTRATION=true` 时才需要额外评估；另外建议公网暴露时把 `--bind` 设为 `127.0.0.1` 交给反代，并设 `YYB_TRUST_PROXY=true`、开启 HTTPS。
 - **填了 YYB_API_TOKEN 之后脚本报 401？** 给脚本的网关请求加上 `Authorization: Bearer <令牌>` 或 `X-API-Token: <令牌>` 请求头，也可以直接在 URL 上拼 `?token=<令牌>`，见第五节。
+- **没配 YYB_API_TOKEN，脚本却报 401？** v4.2.4 起网关会自动生成令牌，去容器日志里取：`docker compose logs | grep -A6 已自动生成`，把它填到青龙的 `YYB_API_TOKEN`；或在 `.env` 里显式指定一次再重启。
+- **升级后容器重启，令牌会变吗？** 不会。自动生成的令牌存在数据库（`app_settings.api_token`），跟随数据卷持久化。**除非你把数据卷删了**（那等于换了个新实例，需要在青龙里同步更新）。
+- **升级后注册页打不开了？** v4.2.4 起公开注册默认关闭。库中还没有账号时，从**内网**访问 `/register` 仍可注册首个管理员；已有账号后需要管理员在「用户管理」里创建，或临时设 `YYB_ALLOW_REGISTRATION=true`。
+- **wxcode 手机 hook 的 `/wxcode/register` 报 401？** v4.2.4 起该接口纳入令牌保护。推荐改用静态配置：`.env` 里 `WXCODE_URLS=http://<手机IP>:8088`（Docker 部署的标准做法），就不需要 hook 自注册。
 - **填了令牌后浏览器登不上控制台？** 不会。`POST /login`（带 `username`）与登录页始终放行，工作台用会话 Cookie 访问接口也不受令牌限制。
 - **改了源码怎么重新出镜像？** ① `./build-gateway.sh`（交叉编译 amd64+arm64）→ ② `cp -r src/resource/templates/. gateway/resource/templates/` → ③ `docker compose -f compose.build.yaml up -d --build`。只改前端模板的话第①步可以跳过。
 - **怎么发新版本到 Docker Hub？** 推送到 `main` 分支即可，GitHub Actions 会自动构建双架构镜像并打上 `latest` / `SHA-<月日>-V<n>.0` / `sha-<短提交号>` 三个标签。注意：改 Go 代码必须先跑 `build-gateway.sh` 并提交 `gateway/` 里的二进制，CI 只做打包不做编译。

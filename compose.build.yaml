@@ -53,7 +53,12 @@ services:
       YYB_ADMIN_USER: ${YYB_ADMIN_USER:-admin}
       YYB_ADMIN_PASSWORD: ${YYB_ADMIN_PASSWORD:-}
       YYB_COOKIE_SECURE: ${YYB_COOKIE_SECURE:-false}
+      # 访问令牌：取码接口默认必须鉴权（fail-closed）。留空时网关会自动生成
+      # 一个随机令牌、存进数据库（持久化，重启不变）并打印到容器日志，不会裸奔。
       YYB_API_TOKEN: ${YYB_API_TOKEN:-}
+      YYB_ALLOW_NO_AUTH: ${YYB_ALLOW_NO_AUTH:-false}
+      YYB_ALLOW_REGISTRATION: ${YYB_ALLOW_REGISTRATION:-false}
+      YYB_TRUST_PROXY: ${YYB_TRUST_PROXY:-false}
       GIN_MODE: release
     volumes:
       - ${DATA_DIR:-./data}/db:/app/resource/db

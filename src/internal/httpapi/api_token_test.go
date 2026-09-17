@@ -9,10 +9,12 @@ import (
 
 // ---------- 公开取码接口访问令牌回归测试 ----------
 //
-// 约定（见 api_token.go）：
-//   - YYB_API_TOKEN 未配置 → 公开接口放行，行为与旧版本一致；
+// 约定（见 api_token.go / security.go）：
+//   - YYB_API_TOKEN 未配置 → 启动时自动生成并落库，取码接口照样需要鉴权
+//     （fail-closed；见 security_test.go 的 TestAPITokenIsGeneratedWhenUnset...）；
 //   - YYB_API_TOKEN 已配置 → 需 Bearer / X-API-Token / ?token= 令牌，
 //     或持有一个有效的控制台登录会话（工作台「调用配置」依赖这条）；
+//   - 只有 YYB_ALLOW_NO_AUTH=true 才会真的关闭鉴权；
 //   - /health 永远开放（容器健康检查）。
 
 const testAPIToken = "test-api-token-0123456789"
@@ -46,6 +48,8 @@ func serveWithHeaders(
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
+	// 首次注册引导要求内网来源，统一用回环地址（见 security_test.go）。
+	req.RemoteAddr = localTestRemoteAddr
 	if cookie != nil {
 		req.AddCookie(cookie)
 	}
@@ -64,13 +68,20 @@ func registerSessionUser(t *testing.T, h http.Handler) *http.Cookie {
 	return sessionCookieOf(t, rec)
 }
 
-func TestAPITokenDisabledKeepsLegacyBehaviour(t *testing.T) {
-	handler, _ := newAPITokenApp(t, "")
+// AllowNoAuth 是唯一的「关闭鉴权」开关，行为与旧版本一致。
+func TestAPITokenAllowNoAuthKeepsLegacyBehaviour(t *testing.T) {
+	t.Setenv("GIN_MODE", "test")
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite", AllowNoAuth: true})
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+	t.Cleanup(func() { app.Close() })
+	handler := app.Handler()
 
 	for _, path := range []string{"/instances", "/whoami"} {
 		rec := serveJSON(t, handler, http.MethodGet, path, "", nil)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("token disabled: GET %s status = %d, want 200 (body=%s)", path, rec.Code, rec.Body.String())
+			t.Fatalf("AllowNoAuth: GET %s status = %d, want 200 (body=%s)", path, rec.Code, rec.Body.String())
 		}
 	}
 }

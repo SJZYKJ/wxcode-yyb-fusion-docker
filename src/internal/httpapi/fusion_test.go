@@ -22,6 +22,9 @@ func newFusionApp(t *testing.T, wxcodeURL string) *App {
 		WXCodeURLs:     []string{wxcodeURL},
 		WXCodeTimeout:  time.Second,
 		WXCodeHookPort: 18089,
+		// 本文件验证取码协议与回退链路，不涉及访问令牌；
+		// 令牌与 /wxcode/* 的鉴权覆盖见 api_token_test.go / security_test.go。
+		AllowNoAuth: true,
 	})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)

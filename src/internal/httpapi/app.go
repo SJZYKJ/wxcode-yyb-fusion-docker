@@ -54,10 +54,21 @@ type Config struct {
 	WXCodeHookPort    int
 	WXCodeMappingFile string
 	WXCodeRegisterTTL time.Duration
-	// APIToken 为空表示公开取码接口不做鉴权（保持旧行为）；
-	// 非空则 /login、/instances、/wxapp/*、/wx/* 等接口需要携带该令牌，
-	// 或持有一个有效的控制台登录会话。见 api_token.go。
+	// APIToken 保护所有"无需浏览器会话即可访问"的取码接口。
+	// 启动时由 resolveAPIToken 解析（security.go），结果始终非空——
+	// 未配置 YYB_API_TOKEN 会自动生成并落库，重启后不变。
+	// 只有 AllowNoAuth 被显式打开时才可能为空。
 	APIToken string
+	// AllowNoAuth 对应 YYB_ALLOW_NO_AUTH=true：显式关闭取码接口鉴权。
+	// 默认 false（fail-closed），开启后端口可达即可列出全部 openid 并取码。
+	AllowNoAuth bool
+	// AllowRegistration 对应 YYB_ALLOW_REGISTRATION=true：忽略数据库设置，
+	// 始终允许公开注册。默认 false——注册关闭，只有内网地址能在
+	// 「库中还没有任何账号」时完成首次管理员注册。
+	AllowRegistration bool
+	// TrustProxy 对应 YYB_TRUST_PROXY=true：信任 X-Forwarded-For / X-Real-IP。
+	// 默认 false，登录限速等一律以 TCP 对端地址为准，避免伪造请求头绕过限速。
+	TrustProxy bool
 }
 
 type App struct {
@@ -153,6 +164,10 @@ func NewApp(cfg Config) (*App, error) {
 	cfg.QingLongURL = loadSetting(qingLongURLSetting, cfg.QingLongURL)
 	cfg.QingLongClientID = loadSetting(qingLongClientIDSetting, cfg.QingLongClientID)
 	cfg.QingLongSecret = loadSetting(qingLongSecretSetting, cfg.QingLongSecret)
+	// fail-closed：没有显式令牌时自动生成并落库，绝不让取码接口裸奔。
+	apiToken, generated := resolveAPIToken(context.Background(), db, cfg.APIToken, cfg.AllowNoAuth)
+	cfg.APIToken = apiToken
+	announceAPIToken(apiToken, generated, cfg.AllowNoAuth)
 	poolCfg := protocol.DefaultConfig()
 	poolCfg.SessionTTL = cfg.SessionTTL
 	poolCfg.ShortlinkTimeout = cfg.RequestTimeout
@@ -243,14 +258,9 @@ func (a *App) Handler() http.Handler {
 	router.Any("/register", gin.WrapF(a.handleRegister))
 	router.Any("/logout", gin.WrapF(a.handleLogout))
 
-	// —— 设备侧引导：已 root 手机上的 hook 直接访问，不参与 API 令牌 ——
-	router.Any("/wxcode/hookcfg", gin.WrapF(a.handleHookCfg))
-	router.Any("/wxcode/register", gin.WrapF(a.handleWXCodeRegister))
-	router.Any("/wxcode/config", gin.WrapF(a.handleHookCfg))
-
 	// —— 公开取码接口：受 YYB_API_TOKEN 保护 ——
-	// 未配置 YYB_API_TOKEN 时等同放行（与旧版本行为完全一致）；
-	// 配置后需要 Bearer / X-API-Token / ?token= 令牌，或有效的控制台会话。
+	// 令牌由启动时解析（显式配置 / 数据库自动生成），永远是非空的 fail-closed；
+	// 只有显式设置 YYB_ALLOW_NO_AUTH=true 才会真的开放。
 	// 现有自动化客户端（青龙脚本）不需要浏览器会话，但要带上令牌；
 	// 工作台「调用配置」在浏览器里带会话调用，因此同样放行。
 	//
@@ -265,6 +275,12 @@ func (a *App) Handler() http.Handler {
 	// original on-device NanoHTTPD service).
 	api.Any("/whoami", gin.WrapF(a.handleWXCompatWhoami))
 	api.Any("/instances", gin.WrapF(a.handleWXCompatInstances))
+	// 设备 hook 的引导配置与心跳注册同样纳入鉴权：注册接口会写 hookInstances，
+	// 而 deviceEndpoints() 会把注册进来的端口拼成 http://127.0.0.1:<port>
+	// 供取码链路请求——不鉴权就等于对外开放了一个 SSRF/取码源劫持点。
+	api.Any("/wxcode/hookcfg", gin.WrapF(a.handleHookCfg))
+	api.Any("/wxcode/config", gin.WrapF(a.handleHookCfg))
+	api.Any("/wxcode/register", gin.WrapF(a.handleWXCodeRegister))
 	api.Any("/wx/oauth", gin.WrapF(a.handlePublicOAuth))
 	api.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
 	api.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))

@@ -4,6 +4,15 @@
 
 ## 2026-09-17
 
+- 安全加固：公开取码接口由「可选鉴权」改为 **fail-closed**。新增 `internal/httpapi/security.go` 的 `resolveAPIToken`：`YYB_API_TOKEN` 未配置时不再放行，而是优先复用数据库 `app_settings.api_token` 里已有的令牌（跟随数据卷持久化，容器重启/升级不变），没有就生成 256bit 随机令牌并写回 + 打印到启动日志。**只有显式设置 `YYB_ALLOW_NO_AUTH=true` 才会真正关闭鉴权**（启动日志有醒目警告）。
+- 安全加固：`/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 从「始终开放」移入访问令牌保护组。原因是注册接口写入的端口会被 `deviceEndpoints()` 拼成 `http://127.0.0.1:<port>` 去请求，未鉴权时等于对外开放了一个 SSRF / 取码源劫持点。
+- 安全加固：公开注册默认**关闭**（`RegistrationEnabled` 缺省值由 true 改为 false）。新增 `registrationAllowed`：库中还没有任何账号时，仅允许**内网/回环/CGNAT 地址**完成首个管理员注册，公网来源返回 403 并提示改用 `YYB_ADMIN_USER`/`YYB_ADMIN_PASSWORD`；新增 `YYB_ALLOW_REGISTRATION=true` 显式开放公开注册。堵住「实例刚暴露就被陌生人抢注管理员」（首个注册者自动成为 admin）。
+- 安全加固：登录失败限速改为「账号 + 来源 IP」双通道（`loginFailPerUser`=10 / `loginFailPerIP`=8，15 分钟窗口），任一超限即拒绝；计数表加上限（4096）并在满时淘汰过期/最早条目，避免被刷爆内存。
+- 安全加固：`clientIP` 默认**不再信任** `X-Forwarded-For` / `X-Real-IP`（原先无条件采信，攻击者每次换一个伪造 IP 即可完全绕过按 IP 的限速）；新增 `YYB_TRUST_PROXY=true` 供确实部署在反代后面的场景显式开启。
+- 修复一个开放重定向：`safeNext` 原先只挡 `//host`，而按 WHATWG URL 规范浏览器会把路径里的反斜杠规范化为 `/`，因此 `/\evil.com`、`/\/evil.com` 可跳出站外；现一并拒绝反斜杠并剔除控制字符（防止响应头注入）。
+- 会话 Cookie：新增 `cookieSecure`，请求为 HTTPS（直连 TLS 或 `X-Forwarded-Proto: https`）时自动加 `Secure`，仍可用 `YYB_COOKIE_SECURE=true` 强制。
+- 新增回归测试 `internal/httpapi/security_test.go`（令牌自动生成与持久化、`/wxcode/*` 鉴权、注册引导窗口、`safeNext`、`clientIP`、伪造 XFF 下的登录锁定）与 `cmd/yyb-go/main_test.go`（`envBool` 字面量解析，防止环境变量接线漏掉后静默失效）。
+
 - 修复普通用户（非管理员）登录后没有实际功能的问题：`/scan`、`/runs`、`/qr`、`/quick-login`、`/accounts` 及账号级 `/api/qinglong/*` 原先统一挂在管理员路由组下，导致点击「添加账号 / 运行管理」都被重定向到个人设置页、也无法扫码添加微信；现改为所有已登录用户可用，仅 `/users`、`/api/auth/users*`、注册开关和 `/api/qinglong/config` 仍限管理员。
 - 新增账号归属（`wechat_accounts.owner_user_id`）：普通用户只能看到并管理自己扫码添加的账号，管理员可见全部；`NULL` 归属的历史账号按管理员名下处理。老库启动时自动补列并建索引，无需手工迁移。
 - 新增账号级「脚本可读」开关（`wechat_accounts.api_shared`，默认开）：公开取码接口 `/login`、`/instances`、`/wxapp/*`、`/wx/*` 不做归属过滤，仍能读到所有账号（含管理员名下的），但会跳过拥有者关闭了该开关的账号，兼顾脚本批量取码与账号隐私。

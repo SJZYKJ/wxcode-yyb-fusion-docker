@@ -43,7 +43,7 @@ func (a *App) requireBrowserSession() gin.HandlerFunc {
 				return
 			}
 		}
-		clearSessionCookie(c.Writer, a.cfg.CookieSecure)
+		clearSessionCookie(c.Writer, a.cookieSecure(c.Request))
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
 			writeError(c.Writer, http.StatusUnauthorized, "请先登录")
 			c.Abort()
@@ -114,24 +114,24 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	key := clientIP(r)
-	if !a.allowLogin(key) {
+	ip := a.clientIP(r)
+	if !a.allowLogin(body.Username, ip) {
 		writeError(w, http.StatusTooManyRequests, "登录失败次数过多，请 15 分钟后重试")
 		return
 	}
 	user, err := a.auth.Authenticate(r.Context(), body.Username, body.Password)
 	if err != nil {
-		a.recordLoginFailure(key)
+		a.recordLoginFailure(body.Username, ip)
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	a.clearLoginFailures(key)
-	token, _, err := a.auth.CreateSession(r.Context(), user.ID, r.UserAgent(), clientIP(r), a.cfg.SessionDuration)
+	a.clearLoginFailures(body.Username, ip)
+	token, _, err := a.auth.CreateSession(r.Context(), user.ID, r.UserAgent(), ip, a.cfg.SessionDuration)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "创建登录会话失败")
 		return
 	}
-	setSessionCookie(w, token, a.cfg.CookieSecure, a.cfg.SessionDuration)
+	setSessionCookie(w, token, a.cookieSecure(r), a.cfg.SessionDuration)
 	next := safeNext(body.Next)
 	writeJSON(w, http.StatusOK, map[string]any{"user": user, "next": next})
 }
@@ -141,25 +141,25 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	enabled, err := a.auth.RegistrationEnabled(r.Context())
-	if err != nil {
-		writeError(w, 500, "读取注册设置失败")
-		return
-	}
-	if r.Method == http.MethodGet {
-		if !enabled {
+	allowed, reason := a.registrationAllowed(r)
+	if !allowed {
+		if r.Method == http.MethodGet {
 			http.Redirect(w, r, "/login?registration=disabled", http.StatusSeeOther)
 			return
 		}
+		if r.Method != http.MethodPost {
+			writeError(w, 405, "method not allowed")
+			return
+		}
+		writeError(w, 403, reason)
+		return
+	}
+	if r.Method == http.MethodGet {
 		serveFileOrText(w, r, filepath.Join(a.resources.Templates, "register.html"), fallbackRegisterHTML)
 		return
 	}
 	if r.Method != http.MethodPost {
 		writeError(w, 405, "method not allowed")
-		return
-	}
-	if !enabled {
-		writeError(w, 403, "注册已关闭")
 		return
 	}
 	var body struct{ Username, DisplayName, Password string }
@@ -172,17 +172,52 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
-	token, _, err := a.auth.CreateSession(r.Context(), user.ID, r.UserAgent(), clientIP(r), a.cfg.SessionDuration)
+	token, _, err := a.auth.CreateSession(r.Context(), user.ID, r.UserAgent(), a.clientIP(r), a.cfg.SessionDuration)
 	if err != nil {
 		writeError(w, 500, "创建登录会话失败")
 		return
 	}
-	setSessionCookie(w, token, a.cfg.CookieSecure, a.cfg.SessionDuration)
+	setSessionCookie(w, token, a.cookieSecure(r), a.cfg.SessionDuration)
 	next := "/settings"
 	if user.Role == "admin" {
 		next = "/"
 	}
 	writeJSON(w, 201, map[string]any{"user": user, "next": next})
+}
+
+// registrationAllowed 决定这次注册请求是否放行，返回 (是否放行, 拒绝原因)。
+//
+// 默认策略是「关闭注册」，理由：任何能访问端口的人注册一个普通账号后就能进
+// 工作台调用 /api/qinglong/* 等接口，而数据库里没有任何账号时第一个注册者
+// 还会被直接提升为管理员——实例一旦暴露在公网，等于把控制权交出去。
+//
+// 放行条件（满足其一）：
+//  1. YYB_ALLOW_REGISTRATION=true（运维显式开启，风险自负）；
+//  2. 管理员在 /users 页面打开注册开关（数据库设置）；
+//  3. 首次部署引导：数据库里还没有任何账号，且请求来自内网/回环地址。
+//     这条是为了让「docker compose up -d 后直接扫个码开始用」仍然成立，
+//     同时挡住公网上来抢注管理员的人。
+func (a *App) registrationAllowed(r *http.Request) (bool, string) {
+	ctx := r.Context()
+	if a.cfg.AllowRegistration {
+		return true, ""
+	}
+	enabled, err := a.auth.RegistrationEnabled(ctx)
+	if err != nil {
+		return false, "读取注册设置失败"
+	}
+	if enabled {
+		return true, ""
+	}
+	count, countErr := a.auth.CountUsers(ctx)
+	if countErr == nil && count == 0 && isLocalOrPrivate(a.clientIP(r)) {
+		return true, ""
+	}
+	if countErr == nil && count == 0 {
+		return false, "注册已关闭：实例还没有任何账号。请从内网访问完成首次注册，" +
+			"或设置环境变量 YYB_ADMIN_USER / YYB_ADMIN_PASSWORD 指定管理员账号后重启。"
+	}
+	return false, "注册已关闭，请联系管理员创建账号"
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +230,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 			_ = a.auth.DeleteSession(r.Context(), cookie.Value)
 		}
 	}
-	clearSessionCookie(w, a.cfg.CookieSecure)
+	clearSessionCookie(w, a.cookieSecure(r))
 	writeJSON(w, 200, map[string]any{"logged_out": true})
 }
 
@@ -454,9 +489,42 @@ func setSessionCookie(w http.ResponseWriter, token string, secure bool, ttl time
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 }
-func clientIP(r *http.Request) string {
-	if value := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); value != "" {
-		return value
+
+// cookieSecure 决定这次响应里的会话 Cookie 是否带 Secure 标记。
+// 除 YYB_COOKIE_SECURE=true 的显式配置外，请求本身是 HTTPS（直连 TLS 或
+// 反代传来的 X-Forwarded-Proto: https）时也自动加上，避免 HTTPS 站点上
+// 会话 Cookie 还能从明文 HTTP 侧被带出去。
+//
+// 注意 X-Forwarded-Proto 可伪造，但伪造者只能影响自己这次请求的响应——
+// 顶多让自己拿到一个带 Secure 的 Cookie 从而登录不上，不构成对他人的攻击。
+func (a *App) cookieSecure(r *http.Request) bool {
+	if a.cfg.CookieSecure {
+		return true
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if forwarded := r.Header.Get("X-Forwarded-Proto"); forwarded != "" {
+		if proto := strings.TrimSpace(strings.Split(forwarded, ",")[0]); strings.EqualFold(proto, "https") {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP 返回用于登录限速与会话记录的客户端地址。
+//
+// 默认【不信任】X-Forwarded-For：该请求头由客户端完全控制，无条件采信会让
+// 攻击者每次请求换一个伪造 IP，把按 IP 做的登录失败计数彻底绕开。
+// 只有运维显式设置 YYB_TRUST_PROXY=true（确实部署在反代后面）时才采信它。
+func (a *App) clientIP(r *http.Request) string {
+	if a.cfg.TrustProxy {
+		if value := firstForwardedFor(r); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(r.Header.Get("X-Real-IP")); value != "" {
+			return value
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
@@ -465,36 +533,129 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func (a *App) allowLogin(key string) bool {
+// 登录失败限速参数。
+//
+// 计数按「账号」和「来源 IP」两条线各自独立：只看 IP 会被伪造头/多 IP 绕开，
+// 只看账号则单个账号被打爆时无法区分攻击者与本人误输。两条线任一超限即拒绝。
+const (
+	loginFailWindow  = 15 * time.Minute
+	loginFailPerIP   = 8
+	loginFailPerUser = 10
+	// loginAttemptsMax 给计数表兜底，防止伪造来源刷爆内存。
+	loginAttemptsMax = 4096
+)
+
+func loginIPKey(ip string) string    { return "ip:" + strings.TrimSpace(ip) }
+func loginUserKey(name string) string { return "user:" + strings.ToLower(strings.TrimSpace(name)) }
+
+func (a *App) allowLogin(username, ip string) bool {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
-	attempt, ok := a.loginAttempts[key]
-	if !ok || time.Since(attempt.Start) >= 15*time.Minute {
-		delete(a.loginAttempts, key)
-		return true
+	now := time.Now()
+	for _, entry := range []struct {
+		key   string
+		limit int
+	}{
+		{loginIPKey(ip), loginFailPerIP},
+		{loginUserKey(username), loginFailPerUser},
+	} {
+		if entry.key == "" {
+			continue
+		}
+		attempt, ok := a.loginAttempts[entry.key]
+		if !ok {
+			continue
+		}
+		if now.Sub(attempt.Start) >= loginFailWindow {
+			delete(a.loginAttempts, entry.key)
+			continue
+		}
+		if attempt.Failures >= entry.limit {
+			return false
+		}
 	}
-	return attempt.Failures < 8
+	return true
 }
 
-func (a *App) recordLoginFailure(key string) {
+func (a *App) recordLoginFailure(username, ip string) {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
-	attempt := a.loginAttempts[key]
-	if attempt.Start.IsZero() || time.Since(attempt.Start) >= 15*time.Minute {
-		attempt = loginAttempt{Start: time.Now()}
+	for _, key := range []string{loginUserKey(username), loginIPKey(ip)} {
+		if key == "" {
+			continue
+		}
+		a.bumpFailureLocked(key, time.Now())
+	}
+}
+
+func (a *App) bumpFailureLocked(key string, now time.Time) {
+	attempt, ok := a.loginAttempts[key]
+	if !ok {
+		if len(a.loginAttempts) >= loginAttemptsMax {
+			a.evictLoginAttemptsLocked(now)
+		}
+		attempt = loginAttempt{Start: now}
+	} else if now.Sub(attempt.Start) >= loginFailWindow {
+		attempt = loginAttempt{Start: now}
 	}
 	attempt.Failures++
 	a.loginAttempts[key] = attempt
 }
 
-func (a *App) clearLoginFailures(key string) {
-	a.loginMu.Lock()
-	delete(a.loginAttempts, key)
-	a.loginMu.Unlock()
-}
-func safeNext(value string) string {
-	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") {
-		return value
+// evictLoginAttemptsLocked 在计数表满时腾位置：先清过期的，仍然满就淘汰
+// 最早开始计数的一条。宁可漏掉一个攻击者的计数，也不要因为表满而拒绝
+// 正常用户的登录（可用性优先，且表满本身不会带来越权）。
+func (a *App) evictLoginAttemptsLocked(now time.Time) {
+	for key, attempt := range a.loginAttempts {
+		if now.Sub(attempt.Start) >= loginFailWindow {
+			delete(a.loginAttempts, key)
+		}
 	}
-	return "/"
+	if len(a.loginAttempts) < loginAttemptsMax {
+		return
+	}
+	var oldestKey string
+	var oldest time.Time
+	for key, attempt := range a.loginAttempts {
+		if oldestKey == "" || attempt.Start.Before(oldest) {
+			oldestKey, oldest = key, attempt.Start
+		}
+	}
+	if oldestKey != "" {
+		delete(a.loginAttempts, oldestKey)
+	}
+}
+
+func (a *App) clearLoginFailures(username, ip string) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	delete(a.loginAttempts, loginUserKey(username))
+	delete(a.loginAttempts, loginIPKey(ip))
+}
+
+// safeNext 只接受站内的绝对路径，挡掉开放重定向。
+//
+// 除了 "//evil.com"（协议相对 URL），还必须拒绝 "/\evil.com"：按 WHATWG URL
+// 规范浏览器会把路径里的反斜杠规范化为 "/"，于是 "/\evil.com" 会被当成
+// "//evil.com" 跳到外站。所有控制字符一并剔除，避免响应头注入。
+func safeNext(value string) string {
+	value = strings.TrimSpace(value)
+	var cleaned strings.Builder
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		cleaned.WriteRune(r)
+	}
+	value = cleaned.String()
+	if !strings.HasPrefix(value, "/") {
+		return "/"
+	}
+	if strings.HasPrefix(value, "//") || strings.HasPrefix(value, "/\\") {
+		return "/"
+	}
+	if strings.Contains(value, "\\") {
+		return "/"
+	}
+	return value
 }

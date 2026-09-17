@@ -454,13 +454,26 @@ func (s *Store) DeleteUser(ctx context.Context, actorID, id int64) error {
 	return nil
 }
 
+// RegistrationEnabled 读取注册开关，缺省值为 false（关闭）。
+//
+// 默认关闭是安全默认值：注册一开，任何能访问到端口的人都能注册账号进入
+// 工作台；而在数据库还没有任何账号时，第一个注册者会被直接提升为管理员。
+// 首次部署的引导由 httpapi.registrationAllowed 的「内网首注册」规则覆盖，
+// 需要公开注册的实例可以设置 YYB_ALLOW_REGISTRATION=true。
 func (s *Store) RegistrationEnabled(ctx context.Context) (bool, error) {
 	var value string
 	err := s.db.QueryRowContext(ctx, "SELECT setting_value FROM auth_settings WHERE setting_key='registration_enabled'").Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
+		return false, nil
 	}
 	return value == "true", err
+}
+
+// CountUsers 返回用户总数，供首次部署引导判断库中是否还没有任何账号。
+func (s *Store) CountUsers(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count)
+	return count, err
 }
 
 func (s *Store) SetRegistrationEnabled(ctx context.Context, enabled bool) error {

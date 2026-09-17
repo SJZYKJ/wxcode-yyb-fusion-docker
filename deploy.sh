@@ -13,13 +13,20 @@
 #    --port <端口>       宿主机端口（默认 8088）
 #    --bind <地址>       监听地址（默认 0.0.0.0；公网机建议 127.0.0.1 配合反代）
 #    --token <令牌>      指定访问令牌（默认自动生成 48 位随机串）
-#    --no-token          不启用访问令牌（⚠️ 取码接口裸奔，仅限完全可信内网）
+#    --no-token          关闭访问令牌（⚠️ 取码接口裸奔，仅限完全可信内网）
+#    --allow-registration 开放公开注册（默认关闭；首次部署建议从内网注册管理员）
+#    --trust-proxy       信任 X-Forwarded-For（只有真的部署在反代后面才开）
 #    --image-tag <标签>  指定镜像标签（默认 latest，可回滚到 SHA-0917-V1.0）
 #    --build             用本仓库源码本地构建（compose.build.yaml）
 #    --dry-run           只准备 .env 并打印要执行的命令，不真的启动容器
 #    --logs              启动后跟踪容器日志
 #    --uninstall         停止并删除容器（保留数据目录）
 #    -h | --help         查看帮助
+#
+#  安全默认值：取码接口（/instances、/wxapp/*、/wx/*、/login 取码分支、
+#  /wxcode/*）始终需要访问令牌；未配置时由网关自动生成并落库，不会裸奔。
+#  公开注册默认关闭，首个管理员只能在「库中还没有账号」时从内网注册，
+#  或由 YYB_ADMIN_USER/YYB_ADMIN_PASSWORD 环境变量预先指定。
 #
 #  幂等：重复执行 = 升级重启；不会覆盖已有的 .env、访问令牌与数据。
 # ============================================================================
@@ -33,6 +40,8 @@ PORT=""
 BIND_ADDR=""
 TOKEN=""
 TOKEN_MODE="auto"      # auto | none
+ALLOW_REGISTRATION=0
+TRUST_PROXY=0
 IMAGE_TAG=""
 BUILD=0
 DRY_RUN=0
@@ -69,6 +78,8 @@ wxcode + YYB Go 融合网关 · 一键部署
   --bind <地址>       监听地址（默认 0.0.0.0）
   --token <令牌>      指定访问令牌（默认自动生成）
   --no-token          关闭访问令牌（⚠️ 不安全，仅限可信内网）
+  --allow-registration 开放公开注册（默认关闭）
+  --trust-proxy       信任 X-Forwarded-For（部署在反代后面时才开）
   --image-tag <标签>  指定镜像标签（默认 latest）
   --build             用仓库源码本地构建（需先跑 build-gateway.sh）
   --dry-run           只准备 .env + 打印命令，不启动容器
@@ -76,8 +87,9 @@ wxcode + YYB Go 融合网关 · 一键部署
   --uninstall         停止并删除容器（数据保留）
   -h, --help          显示本帮助
 
-部署完成后：
-  浏览器打开 http://<宿主IP>:<端口>/ 注册首个账号（自动成为管理员），
+部署完成后（首次）：
+  浏览器打开 http://<宿主IP>:<端口>/ ，从内网注册第一个账号（自动成为管理员）；
+  公网来源会被引导规则拒绝——那种情况请改用 YYB_ADMIN_USER/YYB_ADMIN_PASSWORD。
   再用 /scan 手机微信扫码添加账号；青龙脚本侧配置同名 YYB_API_TOKEN。
 USAGE
     exit 0
@@ -91,6 +103,8 @@ while [ $# -gt 0 ]; do
         --bind)      BIND_ADDR="${2:-}"; shift 2 ;;
         --token)     TOKEN="${2:-}"; shift 2 ;;
         --no-token)  TOKEN_MODE="none"; shift ;;
+        --allow-registration) ALLOW_REGISTRATION=1; shift ;;
+        --trust-proxy)        TRUST_PROXY=1; shift ;;
         --image-tag) IMAGE_TAG="${2:-}"; shift 2 ;;
         --build)     BUILD=1; shift ;;
         --dry-run)   DRY_RUN=1; shift ;;
@@ -215,20 +229,35 @@ prepare_env() {
     [ -n "$IMAGE_TAG" ] && set_env IMAGE_TAG "$IMAGE_TAG"
 
     if [ "$TOKEN_MODE" = "none" ]; then
+        # 新版网关的令牌是 fail-closed：YYB_API_TOKEN 留空会被自动生成。
+        # 想真的关闭鉴权，必须显式打开 YYB_ALLOW_NO_AUTH。
         set_env YYB_API_TOKEN ""
+        set_env YYB_ALLOW_NO_AUTH "true"
         FINAL_TOKEN=""
-        warn "已按要求关闭访问令牌：取码接口不再鉴权，端口可达即可取码"
+        warn "已按要求关闭访问令牌：取码接口不再鉴权，端口可达即可列出 openid 并取码"
     elif [ -n "$TOKEN" ]; then
         set_env YYB_API_TOKEN "$TOKEN"
+        set_env YYB_ALLOW_NO_AUTH "false"
         FINAL_TOKEN="$TOKEN"
         ok "已写入指定的访问令牌"
     elif [ -n "$existing_token" ]; then
+        set_env YYB_ALLOW_NO_AUTH "false"
         FINAL_TOKEN="$existing_token"
         ok "沿用已有访问令牌（要更换：--token <新令牌>）"
     else
         FINAL_TOKEN="$(gen_token)"
         set_env YYB_API_TOKEN "$FINAL_TOKEN"
+        set_env YYB_ALLOW_NO_AUTH "false"
         ok "已生成随机访问令牌并写入 .env"
+    fi
+
+    if [ "$ALLOW_REGISTRATION" = "1" ]; then
+        set_env YYB_ALLOW_REGISTRATION "true"
+        warn "已开放公开注册：任何能访问端口的人都能创建普通账号，请确认这是你要的"
+    fi
+    if [ "$TRUST_PROXY" = "1" ]; then
+        set_env YYB_TRUST_PROXY "true"
+        ok "已启用对 X-Forwarded-For 的信任（请确认前面确实有反向代理）"
     fi
 
     # 以 .env 为准回读端口，避免用户手改过端口后健康检查打错地方
@@ -330,15 +359,19 @@ fi
 IP="$(host_ip)"
 step "部署完成"
 cat <<EOF
-   面板地址   ${C_BOLD}http://${IP}:${PORT}/${C_RESET}          （首次注册的账号即管理员）
+   面板地址   ${C_BOLD}http://${IP}:${PORT}/${C_RESET}
    扫码登录   http://${IP}:${PORT}/scan          （手机微信扫码，自动保存登录态）
    健康检查   http://${IP}:${PORT}/health
-   访问令牌   ${C_BOLD}${FINAL_TOKEN:-（未启用）}${C_RESET}
+   访问令牌   ${C_BOLD}${FINAL_TOKEN:-（未启用 ⚠️）}${C_RESET}
    数据目录   ${DATA_ABS}
    容器名     wxcode-yyb-gateway
 
 下一步：
-   1) 浏览器打开面板 → 注册第一个账号（自动成为管理员）
+   1) 浏览器打开面板 http://${IP}:${PORT}/
+        · 还没有任何账号时：从「内网」访问 /register 注册第一个管理员
+          （公网来源会被拒绝，避免被陌生人抢注；也可改用 YYB_ADMIN_USER /
+            YYB_ADMIN_PASSWORD 环境变量预先指定管理员）
+        · 已有账号：直接 /login 登录
    2) 打开 /scan → 手机微信扫码，把微信号添加进来
    3) 青龙环境变量里给脚本配同名令牌：YYB_API_TOKEN=${FINAL_TOKEN:-<空>}
       （顺丰中秋 / sfsy日常版 / 移动云盘 三个脚本已内置支持，两边值必须一致）
@@ -349,6 +382,11 @@ cat <<EOF
    停服     ./deploy.sh --uninstall
    改端口   编辑 .env 里的 YYB_PORT 后重跑 ./deploy.sh
 EOF
+
+if [ "$TOKEN_MODE" = "none" ]; then
+    warn "访问令牌已关闭：/instances、/wxapp/*、/wx/* 等取码接口任何人都能调用。"
+    warn "要恢复鉴权：重跑 ./deploy.sh --token \"\$(openssl rand -hex 24)\""
+fi
 
 if [ "$FOLLOW_LOGS" = "1" ] && [ "$DRY_RUN" != "1" ]; then
     info "跟踪容器日志（Ctrl+C 退出，容器继续运行）"

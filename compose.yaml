@@ -57,9 +57,16 @@ services:
       YYB_ADMIN_USER: ${YYB_ADMIN_USER:-admin}
       YYB_ADMIN_PASSWORD: ${YYB_ADMIN_PASSWORD:-}
       YYB_COOKIE_SECURE: ${YYB_COOKIE_SECURE:-false}
-      # 访问令牌：留空 = /login、/instances、/wxapp/* 等取码接口不做鉴权
-      #（与旧版本行为一致）。填了之后脚本必须带令牌，详见 README-DOCKER.md 第五节。
+      # 访问令牌：取码接口默认必须鉴权（fail-closed）。留空时网关会自动生成
+      # 一个随机令牌、存进数据库（持久化，重启不变）并打印到容器日志，
+      # 不会裸奔。要让脚本能调用，两边配同一个值即可（见 README-DOCKER.md 第五节）。
       YYB_API_TOKEN: ${YYB_API_TOKEN:-}
+      # 显式关闭取码接口鉴权（⚠️ 端口可达即可列出全部 openid 并取码）
+      YYB_ALLOW_NO_AUTH: ${YYB_ALLOW_NO_AUTH:-false}
+      # 公开注册开关（默认关闭；关闭时仅内网可完成首次管理员注册）
+      YYB_ALLOW_REGISTRATION: ${YYB_ALLOW_REGISTRATION:-false}
+      # 部署在反向代理后面时才开；直连暴露时保持 false，避免伪造 X-Forwarded-For
+      YYB_TRUST_PROXY: ${YYB_TRUST_PROXY:-false}
       GIN_MODE: release
     volumes:
       # 数据目录默认落在 compose 文件同级的 ./data 下；

@@ -18,6 +18,9 @@ func TestHandlerServesGinRoutesAndSwaggerDocs(t *testing.T) {
 		AvatarTimeout:  time.Second,
 		SessionTTL:     time.Minute,
 		QRSessionTTL:   time.Minute,
+		// 本文件验证路由/会话行为，不涉及取码接口令牌；令牌链路见
+		// api_token_test.go 与 security_test.go。
+		AllowNoAuth: true,
 	})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -145,6 +148,9 @@ func TestAuthMeWithoutConfiguredAuthentication(t *testing.T) {
 		AvatarTimeout:  time.Second,
 		SessionTTL:     time.Minute,
 		QRSessionTTL:   time.Minute,
+		// 本文件验证路由/会话行为，不涉及取码接口令牌；令牌链路见
+		// api_token_test.go 与 security_test.go。
+		AllowNoAuth: true,
 	})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -187,6 +193,7 @@ func TestSQLiteAuthFirstRegistrationAndUnauthorizedAPI(t *testing.T) {
 	app, err := NewApp(Config{
 		ResourceRoot: t.TempDir(),
 		AuthDriver:   "sqlite",
+		AllowNoAuth:  true,
 	})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -203,6 +210,8 @@ func TestSQLiteAuthFirstRegistrationAndUnauthorizedAPI(t *testing.T) {
 	register := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"username":"owner","displayName":"Owner","password":"owner-password"}`))
 	request.Header.Set("Content-Type", "application/json")
+	// 首次注册引导只放行内网来源，这里模拟局域网访问。
+	request.RemoteAddr = localTestRemoteAddr
 	handler.ServeHTTP(register, request)
 	if register.Code != http.StatusCreated {
 		t.Fatalf("POST /register status = %d body = %s", register.Code, register.Body.String())

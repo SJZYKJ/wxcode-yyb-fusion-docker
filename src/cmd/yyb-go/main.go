@@ -118,6 +118,9 @@ func main() {
 		WXCodeHookPort:    wxCodeHookPort,
 		WXCodeMappingFile: strings.TrimSpace(os.Getenv("WXCODE_MAPPING_FILE")),
 		APIToken:          strings.TrimSpace(os.Getenv("YYB_API_TOKEN")),
+		AllowNoAuth:       envBool("YYB_ALLOW_NO_AUTH"),
+		AllowRegistration: envBool("YYB_ALLOW_REGISTRATION"),
+		TrustProxy:        envBool("YYB_TRUST_PROXY"),
 	}
 
 	app, err := httpapi.NewApp(cfg)
@@ -125,12 +128,6 @@ func main() {
 		log.Fatalf("init app: %v", err)
 	}
 	defer app.Close()
-
-	if cfg.APIToken == "" {
-		log.Printf("YYB_API_TOKEN 未配置：/login、/instances、/wxapp/* 等取码接口不做鉴权，请勿直接暴露到公网")
-	} else {
-		log.Printf("YYB_API_TOKEN 已启用：取码接口需要 Bearer / X-API-Token / ?token= 令牌，或有效的控制台会话")
-	}
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	srv := &http.Server{
@@ -173,4 +170,15 @@ func getEnvWithFallback(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// envBool 读取布尔型环境变量，接受 1/true/yes/on（大小写不敏感）。
+// 未设置或值不可识别时返回 false——安全相关的开关一律默认关闭。
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

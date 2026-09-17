@@ -23,7 +23,9 @@ const (
 func newOwnershipApp(t *testing.T) (http.Handler, *App) {
 	t.Helper()
 	t.Setenv("GIN_MODE", "test")
-	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite"})
+	// AllowNoAuth：本文件只验证「谁能看到/操作哪些账号」，与取码接口的令牌
+	// 鉴权无关；令牌链路本身在 api_token_test.go 里单独覆盖。
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite", AllowNoAuth: true})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
 	}
@@ -40,6 +42,10 @@ func serveJSON(t *testing.T, h http.Handler, method, path, body string, cookie *
 		req = httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// httptest 默认把 RemoteAddr 设成 192.0.2.1（TEST-NET，公网段），
+	// 会被「首次注册只允许内网地址」的引导规则挡掉；这里显式改成回环地址，
+	// 模拟真实部署里在局域网完成首次初始化的场景。
+	req.RemoteAddr = localTestRemoteAddr
 	if cookie != nil {
 		req.AddCookie(cookie)
 	}

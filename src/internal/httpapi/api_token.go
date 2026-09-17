@@ -15,16 +15,18 @@ import (
 const apiTokenHeader = "X-API-Token"
 
 // requireAPIToken 保护"无需浏览器会话即可访问"的取码类接口
-// （/login 取码分支、/instances、/whoami、/wxapp/*、/wx/*、/openapi.json）。
+// （/login 取码分支、/instances、/whoami、/wxapp/*、/wx/*、/wxcode/*、/openapi.json）。
 //
-// 设计目标：默认不改变任何既有部署的行为。
+// fail-closed：令牌始终非空。App.cfg.APIToken 由 security.go 的
+// resolveAPIToken 在启动时解析——显式配置优先，其次复用数据库里自动生成的
+// 令牌，都没有就现场生成。只有运维显式设置 YYB_ALLOW_NO_AUTH=true
+// 才会得到空字符串并放行全部请求（日志里有醒目警告）。
 //
-//   - YYB_API_TOKEN 未配置（空字符串）→ 完全放行，等价于旧版本；
-//   - YYB_API_TOKEN 已配置 → 满足以下任一条件即放行：
-//     1. Authorization: Bearer <token>
-//     2. X-API-Token: <token>
-//     3. 查询参数 ?token=<token>（给不方便加请求头的旧脚本兜底）
-//     4. 携带有效的浏览器登录会话 Cookie
+// 令牌非空时，满足以下任一条件即放行：
+//  1. Authorization: Bearer <token>
+//  2. X-API-Token: <token>
+//  3. 查询参数 ?token=<token>（给不方便加请求头的旧脚本兜底）
+//  4. 携带有效的浏览器登录会话 Cookie
 //     （工作台的「调用配置」就是在浏览器里带 Cookie 调 /wxapp/*、/wx/code 的，
 //     放行会话可保证 Web 界面不被自己的令牌拦住。）
 //
@@ -35,6 +37,7 @@ const apiTokenHeader = "X-API-Token"
 func (a *App) requireAPIToken(bypass ...func(*http.Request) bool) gin.HandlerFunc {
 	expected := strings.TrimSpace(a.cfg.APIToken)
 	return func(c *gin.Context) {
+		// 只有 YYB_ALLOW_NO_AUTH 显式开启时这里才可能为空（见 security.go）。
 		if expected == "" {
 			c.Next()
 			return
