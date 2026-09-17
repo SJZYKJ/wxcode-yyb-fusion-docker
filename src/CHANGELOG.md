@@ -4,6 +4,11 @@
 
 ## 2026-09-17
 
+> ⚠️ 仓库维护提示：GitHub 会扫描**整条提交信息**（含正文）里的跳过标记
+> （`[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]`），
+> 命中就整个 workflow 不触发。所以「在正文里解释为什么**没有**加 `[skip ci]`」
+> 会导致这一行文字把构建也一起跳过——想触发构建时，正文里也别出现这些字面量。
+
 - 安全加固：公开取码接口由「可选鉴权」改为 **fail-closed**。新增 `internal/httpapi/security.go` 的 `resolveAPIToken`：`YYB_API_TOKEN` 未配置时不再放行，而是优先复用数据库 `app_settings.api_token` 里已有的令牌（跟随数据卷持久化，容器重启/升级不变），没有就生成 256bit 随机令牌并写回 + 打印到启动日志。**只有显式设置 `YYB_ALLOW_NO_AUTH=true` 才会真正关闭鉴权**（启动日志有醒目警告）。
 - 安全加固：`/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 从「始终开放」移入访问令牌保护组。原因是注册接口写入的端口会被 `deviceEndpoints()` 拼成 `http://127.0.0.1:<port>` 去请求，未鉴权时等于对外开放了一个 SSRF / 取码源劫持点。
 - 安全加固：公开注册默认**关闭**（`RegistrationEnabled` 缺省值由 true 改为 false）。新增 `registrationAllowed`：库中还没有任何账号时，仅允许**内网/回环/CGNAT 地址**完成首个管理员注册，公网来源返回 403 并提示改用 `YYB_ADMIN_USER`/`YYB_ADMIN_PASSWORD`；新增 `YYB_ALLOW_REGISTRATION=true` 显式开放公开注册。堵住「实例刚暴露就被陌生人抢注管理员」（首个注册者自动成为 admin）。
