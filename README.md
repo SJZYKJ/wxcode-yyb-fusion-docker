@@ -99,7 +99,6 @@ docker compose up -d
 （推荐前两种，`?token=` 会出现在访问日志与 Referer 里）。
 
 > ⚠️ 数据卷 `.env` 里 `DATA_DIR` 指向的目录含微信登录凭据（SQLite 明文），请勿放到可被外部访问的共享目录。
-> ⚠️ 上游仓库均未声明 LICENSE，请自行评估再分发风险，见 [NOTICE.md](NOTICE.md)。
 
 ---
 
@@ -132,7 +131,6 @@ yyb-go 原生扫码已覆盖全部取码需求，**裸 Docker 就能跑**；wxco
 | 文档 | 内容 |
 |---|---|
 | [README-DOCKER.md](README-DOCKER.md) | 完整部署文档：目录结构、取码接口、多用户账号隔离（v4.2.2）、访问令牌细节（v4.2.3）、wxcode 设备接入、FAQ |
-| [NOTICE.md](NOTICE.md) | 第三方来源与许可说明（上游仓库均未声明 LICENSE，请自行评估再分发风险） |
 
 **版本摘要**
 
