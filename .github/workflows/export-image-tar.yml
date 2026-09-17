@@ -67,12 +67,17 @@ jobs:
       - name: Upload tar to GitHub Release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 注意：本 workflow 没有 actions/checkout，工作区不是 git 仓库，
+          # gh 无法自动推断仓库 → 必须显式给 GH_REPO 或 --repo，否则必失败。
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           OUT="${{ steps.save.outputs.out }}"
-          gh release upload "${{ inputs.release_tag }}" "$OUT" "${OUT}.sha256" --clobber
+          gh auth status || true
+          gh release upload "${{ inputs.release_tag }}" "$OUT" "${OUT}.sha256" \
+            --repo "${{ github.repository }}" --clobber
           echo "已上传到 Release ${{ inputs.release_tag }}"
-          gh release view "${{ inputs.release_tag }}" --json assets \
+          gh release view "${{ inputs.release_tag }}" --repo "${{ github.repository }}" --json assets \
             --jq '.assets[] | "\(.name)  \(.size/1048576 * 100 | floor / 100) MB"'
 
       - name: Summary
