@@ -90,7 +90,9 @@ cp .env.example .env        # 默认即可：WXCODE_URLS 留空 = 原生扫码�
 docker compose up -d        # 拉取 chungg/wxcode-yyb-fusion:latest 并启动
 ```
 
-想固定版本 / 回滚，改 `.env` 里的 `IMAGE_TAG`（例如 `SHA-0917-V1.0` 或 `sha-9f3c1a2`）后重新 `up -d`。
+想固定版本 / 回滚，改 `.env` 里的 `IMAGE_TAG` 后重新 `up -d`。版本标签只有两种：
+`v<N>` 是正式发布号（`v1`、`v2`、`v3`…，**全局递增、永不重置**，回滚就用它），
+`latest` 永远指向最新一次构建（会动，别拿它做回滚）。
 
 ### 方式 B：本机自行构建
 
@@ -342,5 +344,6 @@ v4.0.0 起改为**单服务纯 Docker**：
 - **wxcode 手机 hook 的 `/wxcode/register` 报 401？** v4.2.4 起该接口纳入令牌保护。推荐改用静态配置：`.env` 里 `WXCODE_URLS=http://<手机IP>:8088`（Docker 部署的标准做法），就不需要 hook 自注册。
 - **填了令牌后浏览器登不上控制台？** 不会。`POST /login`（带 `username`）与登录页始终放行，工作台用会话 Cookie 访问接口也不受令牌限制。
 - **改了源码怎么重新出镜像？** ① `./build-gateway.sh`（交叉编译 amd64+arm64）→ ② `cp -r src/resource/templates/. gateway/resource/templates/` → ③ `docker compose -f compose.build.yaml up -d --build`。只改前端模板的话第①步可以跳过。
-- **怎么发新版本到 Docker Hub？** 推送到 `main` 分支即可，GitHub Actions 会自动构建双架构镜像并打上 `latest` / `SHA-<月日>-V<n>.0` / `sha-<短提交号>` 三个标签。注意：改 Go 代码必须先跑 `build-gateway.sh` 并提交 `gateway/` 里的二进制，CI 只做打包不做编译。
+- **怎么发新版本到 Docker Hub？** 推送到 `main` 分支即可，GitHub Actions 会自动构建双架构镜像并打上 `latest` 与 `v<N>` 两个标签（`v<N>` 是全局递增的正式发布号，CI 每次 +1 并自动建同名 Release；提交 SHA 记录在 Release 说明里）。注意：改 Go 代码必须先跑 `build-gateway.sh` 并提交 `gateway/` 里的二进制，CI 只做打包不做编译。
+- **想把某个已有镜像改个标签名（不重新构建）？** 跑 `Retag (重新挂标签，不重建)` 工作流，填源标签和目标标签即可；它用 `docker buildx imagetools create` 直接改 registry 里的 manifest，几秒钟完成，层数据不动。
 - **数据在哪？** 默认 `${DATA_DIR:-./data}/db`（SQLite）、`/qr`（二维码）、`/avatars`，重启不丢；换盘位置改 `.env` 里的 `DATA_DIR`。

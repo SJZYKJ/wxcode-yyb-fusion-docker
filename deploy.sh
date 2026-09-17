@@ -16,7 +16,7 @@
 #    --no-token          关闭访问令牌（⚠️ 取码接口裸奔，仅限完全可信内网）
 #    --allow-registration 开放公开注册（默认关闭；首次部署建议从内网注册管理员）
 #    --trust-proxy       信任 X-Forwarded-For（只有真的部署在反代后面才开）
-#    --image-tag <标签>  指定镜像标签（默认 latest，可回滚到 SHA-0917-V1.0）
+#    --image-tag <标签>  指定镜像标签（默认 latest，可固定/回滚到 v4、v5 这类发布号）
 #    --build             用本仓库源码本地构建（compose.build.yaml）
 #    --dry-run           只准备 .env 并打印要执行的命令，不真的启动容器
 #    --logs              启动后跟踪容器日志

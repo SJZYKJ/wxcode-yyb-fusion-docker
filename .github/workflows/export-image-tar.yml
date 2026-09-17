@@ -13,11 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: '完整镜像引用（含标签），例如 chungg/wxcode-yyb-fusion:SHA-0917-V4.0'
+        description: '完整镜像引用（含标签），例如 chungg/wxcode-yyb-fusion:v5'
         required: true
-        default: 'chungg/wxcode-yyb-fusion:SHA-0917-V4.0'
+        default: 'chungg/wxcode-yyb-fusion:v4'
       release_tag:
-        description: '把资产挂到哪个 Release 标签（该标签需已存在）'
+        description: '把资产挂到哪个 Release 标签（该标签需已存在）——注意这是 GitHub 的 Release 名，与镜像标签可以不同名'
         required: true
         default: 'SHA-0917-V4.0'
 

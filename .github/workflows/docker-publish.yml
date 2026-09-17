@@ -20,23 +20,31 @@
 #        · 推送到 main / master 分支（最常用）
 #        · 到仓库 Actions 页面，选 "构建并推送镜像到 Docker Hub" → Run workflow
 #
-# —— 镜像标签规则（统一约定，改之前请先读完）——
+# —— 镜像标签规则（v2 版，统一约定，改之前请先读完）——
 #
-#   每次构建会推三个标签，命名全部由 CI 生成，不需要手工维护版本文件：
+#   每次构建推两个标签，命名全部由 CI 自动生成，不需要手工维护版本文件：
 #
-#     latest                    默认分支的最新构建
-#     SHA-<月日>-V<序号>.0       本次版本，例：SHA-0917-V1.0、SHA-0917-V2.0
-#     sha-<7位提交号>            按提交精确定位，用于回滚
+#     v<N>      正式发布号。N 是**全局单调递增**的整数，永不重置、永不复用。
+#               固定版本 / 回滚都用它，例：v4 → v5 → v6。
+#     latest    默认分支最新一次成功构建的快捷方式（会动，别用它做回滚）。
 #
-#   「序号」按天重置：同一天的第 1 次构建是 V1.0，第 2 次是 V2.0；
-#   第二天又从 V1.0 开始。序号取自本仓库的 Git 标签（CI 每次构建成功后
-#   会打同名 Git 标签并建 Release），因此 GitHub 与 Docker Hub 两边的
-#   版本号始终一致。
+#   ⚠️ 历史教训：旧方案是 SHA-<月日>-V<n>.0，序号**按天重置**——于是
+#   昨天的 V4.0 比今天的 V1.0 旧，序号之间无法比较大小，每次构建的标签
+#   都不一样也没法判断先后。v2 方案用全局计数器彻底解决这一点。
+#
+#   N 的来源：本仓库所有 `v<N>` 标签，加上历史遗留 `SHA-<月日>-V<n>.<m>`
+#   标签里的最大序号，取最大值 + 1。所以迁移后第一次构建是 v5
+#   （历史 4 个版本已回填为 v1..v4，见 .github/workflows/retag.yml）。
+#   标签与 Release 由 CI 在构建成功后自动创建，GitHub 与 Docker Hub
+#   两边的版本号始终一致；提交 SHA 记录在 Release 说明里，不占用标签名。
 #
 # —— 构建结果 ——
 #   镜像地址：<DOCKERHUB_USERNAME>/wxcode-yyb-fusion:latest
 #   部署时在 .env 里填：IMAGE_REPO=<DOCKERHUB_USERNAME>/wxcode-yyb-fusion
-#   回滚时在 .env 里把 IMAGE_TAG 改成 sha-<7位提交号>
+#   固定版本：在 .env 里设 IMAGE_TAG=v5（换成你要的号即可）
+#   回滚：IMAGE_TAG 改成上一个 `v<N>` 再 `docker compose up -d`；
+#         要精确到提交，去对应 Release 说明里看提交 SHA
+#         （GitHub → Releases → 选版本 → 见「提交」一行）
 #
 # —— 本项目的特殊之处 ——
 #   gateway/ 下已经放了交叉编译好的 linux/amd64 与 linux/arm64 二进制，
@@ -109,28 +117,26 @@ jobs:
         id: ver
         run: |
           set -uo pipefail
-          # 用北京时间判定「当天」，与用户直觉一致
-          MMDD=$(TZ=Asia/Shanghai date +%m%d)
-
-          # 序号来源：本仓库里当天的 SHA-<MMDD>-V<n>.0 标签个数（取最大值 +1）
           git fetch --tags --force --quiet 2>/dev/null || true
-          MAX=$(git tag -l "SHA-${MMDD}-V*" \
-                  | sed -nE 's/^SHA-[0-9]{4}-V([0-9]+)\.[0-9]+$/\1/p' \
-                  | sort -n | tail -1)
-          if [ -z "${MAX}" ]; then
-            MAX=0
-          fi
+
+          # 序号来源：全仓库最大序号 + 1，**永不按天重置、永不复用**。
+          # 同时兼容历史遗留的 SHA-<月日>-V<n>.<m>，保证迁移前后单调递增。
+          #   第 1 条 sed：v12          -> 12
+          #   第 2 条 sed：SHA-0917-V4.0 -> 4
+          MAX=$(git tag -l | sed -nE \
+                  -e 's/^v([0-9]+)$/\1/p' \
+                  -e 's/^SHA-[0-9]{4}-V([0-9]+)\.[0-9]+$/\1/p' \
+                | sort -n | tail -1)
+          MAX=${MAX:-0}
           N=$((MAX + 1))
+          VERSION="v${N}"
 
-          VERSION="SHA-${MMDD}-V${N}.0"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "mmdd=${MMDD}" >> "$GITHUB_OUTPUT"
-
           echo "### 本次版本：\`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "（当天第 ${N} 次构建；版本序号按天重置，取自本仓库 Git 标签）" >> "$GITHUB_STEP_SUMMARY"
+          echo "（全局第 ${N} 号发布；序号单调递增、永不重置，取自本仓库 Git 标签）" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 生成镜像标签与元数据（latest / sha-提交号）
+      - name: 生成镜像标签与元数据（latest / 可选自定义标签）
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -138,9 +144,9 @@ jobs:
           tags: |
             # 默认分支构建 -> latest
             type=raw,value=latest,enable={{is_default_branch}}
-            # 每次构建附带短提交号，便于按提交精确回滚
-            type=sha,format=short
-            # 网页手动触发时额外附加输入的自定义标签
+            # 正式版本号 v<N> 由「构建并推送」步骤直接拼上，这里不再生成，
+            # 以保证 Docker Hub 上只有 latest 和 v<N> 两种标签，不产生噪音。
+            # 网页手动触发时可额外附加一个自定义标签（可留空）
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
 
       - name: 构建并推送
@@ -179,16 +185,17 @@ jobs:
             printf '```\n'
             printf '%s:%s\n' "${REPO}" "${VERSION}"
             printf '%s:latest\n' "${REPO}"
-            printf '%s:sha-%s\n' "${REPO}" "${SHORT}"
             printf '```\n\n'
             printf -- '- 摘要：`%s`\n' "${DIGEST}"
             printf -- '- 平台：`linux/amd64`、`linux/arm64`\n'
-            printf -- '- 提交：`%s`\n\n' "${GITHUB_SHA}"
+            printf -- '- 提交：`%s`（短号 `%s`）\n\n' "${GITHUB_SHA}" "${SHORT}"
             printf '## 部署\n\n'
             printf '```bash\n'
             printf 'docker compose pull && docker compose up -d\n'
             printf '```\n\n'
-            printf '回滚：把 `.env` 里的 `IMAGE_TAG` 改成 `sha-%s` 后重新 up。\n' "${SHORT}"
+            printf '固定到本版本：在 `.env` 里设 `IMAGE_TAG=%s`。\n\n' "${VERSION}"
+            printf '回滚：把 `.env` 里的 `IMAGE_TAG` 改成上一个 `v<N>` 再 `up -d`；\n'
+            printf '要精确到提交，按上面的提交 SHA 与本页核对即可。\n'
           } > /tmp/notes.md
 
           if gh release view "${VERSION}" >/dev/null 2>&1; then

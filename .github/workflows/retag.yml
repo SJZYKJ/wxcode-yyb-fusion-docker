@@ -1,0 +1,101 @@
+name: Retag (重新挂标签，不重建)
+
+# 用途：把一个已存在的镜像标签，挂到另一个（或几个）标签上。
+# 用 `docker buildx imagetools create` 直接操作 registry 里的 manifest，
+# **不重新构建、不重新上传层**，几秒钟完成，两个标签指向同一份层数据。
+#
+# 典型用法：
+#   · 命名方案迁移，把历史镜像回填成新格式（SHA-0917-V1.0 -> v1，依此类推）
+#   · latest 被误删 / 标签打歪了，需要补回来或改指向
+#   · 想给某个已发布版本再多挂一个别名
+#
+# 为什么放在 CI 里做：retag 需要对 Docker Hub 仓库有**写权限**，
+# 而写凭据只存在于仓库 Secrets（DOCKERHUB_TOKEN）中，本地不需要持有。
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: '源标签（必须已存在于 Docker Hub）'
+        required: true
+        default: 'SHA-0917-V4.0'
+      targets:
+        description: '目标标签，多个用逗号分隔（例：v4 或 v1,v2,v3,v4）'
+        required: true
+        default: 'v4'
+
+env:
+  IMAGE_NAME: wxcode-yyb-fusion
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 准备 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 重新挂标签并逐个回读验证
+        run: |
+          set -euo pipefail
+          REPO="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}"
+          SRC="${{ inputs.source }}"
+
+          echo "=== 源标签 $REPO:$SRC ==="
+          docker buildx imagetools inspect "${REPO}:${SRC}"
+
+          # 解析目标标签（容忍空格与末尾逗号）
+          ARGS=()
+          TARGETS=()
+          IFS=',' read -ra RAW <<< "${{ inputs.targets }}"
+          for t in "${RAW[@]}"; do
+            t="$(printf '%s' "$t" | tr -d '[:space:]')"
+            [ -z "$t" ] && continue
+            if [ "$t" = "$SRC" ]; then
+              echo "::error::目标标签与源标签相同（$t），无需 retag"
+              exit 1
+            fi
+            ARGS+=(--tag "${REPO}:${t}")
+            TARGETS+=("$t")
+          done
+          if [ "${#ARGS[@]}" -eq 0 ]; then
+            echo "::error::没有解析出任何有效的目标标签"
+            exit 1
+          fi
+          echo "目标标签：${TARGETS[*]}"
+
+          # 真正的 retag：不构建、不推送层，只写新的 manifest 指向
+          docker buildx imagetools create "${ARGS[@]}" "${REPO}:${SRC}"
+
+          # 回读验证：每个目标标签都必须同时列出 amd64 与 arm64，
+          # 才算和源标签指向同一份双架构镜像。
+          # 注意：这里**故意不比较顶层 manifest 摘要**——imagetools 会重建
+          # index，顶层摘要可能与源不同（内容等价），拿它对比会误报。
+          echo
+          echo "=== 回读验证 ==="
+          FAIL=0
+          for t in "${TARGETS[@]}"; do
+            OUT="$(docker buildx imagetools inspect "${REPO}:${t}")"
+            AMD=$(printf '%s' "$OUT" | grep -c 'linux/amd64' || true)
+            ARM=$(printf '%s' "$OUT" | grep -c 'linux/arm64' || true)
+            printf '  %-40s amd64=%s arm64=%s\n' "${REPO}:${t}" "$AMD" "$ARM"
+            if [ "$AMD" -lt 1 ] || [ "$ARM" -lt 1 ]; then
+              echo "::error::${t} 缺少架构（amd64=$AMD arm64=$ARM）"
+              FAIL=1
+            fi
+          done
+          [ "$FAIL" -eq 0 ] || exit 1
+
+          {
+            echo "## Retag 完成"
+            echo ""
+            echo "- 源：\`${REPO}:${SRC}\`"
+            echo "- 目标：${TARGETS[*]}"
+            echo ""
+            echo "目标标签与源标签的层数据完全一致，只是名字不同。"
+          } >> "$GITHUB_STEP_SUMMARY"

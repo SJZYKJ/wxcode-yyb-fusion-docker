@@ -51,7 +51,7 @@ docker compose up -d
 | `--no-token` | 关闭访问令牌（⚠️ 取码接口裸奔，仅限完全可信内网） |
 | `--allow-registration` | 开放公开注册（默认关闭） |
 | `--trust-proxy` | 信任 `X-Forwarded-For`（确实有反代时才开） |
-| `--image-tag SHA-0917-V1.0` | 固定版本 / 回滚 |
+| `--image-tag v5` | 固定版本 / 回滚（`v<N>` 为全局递增的正式发布号） |
 | `--build` | 用本仓库源码本地构建（改 Go 代码后用） |
 | `--dry-run` | 只准备 `.env` 并打印命令，不启动容器 |
 | `--logs` | 启动后跟踪容器日志 |
