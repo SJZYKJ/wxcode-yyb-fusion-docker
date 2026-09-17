@@ -1,0 +1,96 @@
+name: Export image tar (offline bundle)
+
+# 用途：给「能访问 GitHub、但拉 Docker Hub 极慢或拉不动」的环境提供离线导入包。
+#
+# 在 GitHub Actions 的机器上（对 Docker Hub 是正常的白名单带宽）执行
+# `docker pull` + `docker save | gzip`，再挂到指定 Release 的资产里。
+# 使用者只需要下载 tar.gz，然后 `docker load -i <文件>`，完全不碰 Docker Hub。
+#
+# 注意：Actions runner 是 linux/amd64，导出的包**只含 amd64 镜像**。
+# arm64 设备请改用镜像仓库直拉。
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: '完整镜像引用（含标签），例如 chungg/wxcode-yyb-fusion:SHA-0917-V4.0'
+        required: true
+        default: 'chungg/wxcode-yyb-fusion:SHA-0917-V4.0'
+      release_tag:
+        description: '把资产挂到哪个 Release 标签（该标签需已存在）'
+        required: true
+        default: 'SHA-0917-V4.0'
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show runner info
+        run: |
+          docker version
+          uname -m
+
+      - name: Pull image
+        run: |
+          set -euo pipefail
+          docker pull "${{ inputs.image }}"
+          docker image inspect "${{ inputs.image }}" --format '{{.Id}} | {{.Architecture}}/{{.Os}}'
+
+      - name: Save image to gzipped tar
+        id: save
+        run: |
+          set -euo pipefail
+          IMG="${{ inputs.image }}"
+          SAFE="$(printf '%s' "$IMG" | tr '/:' '__')"
+          OUT="yyb-go-image-${SAFE}.tar.gz"
+          echo "building $OUT"
+          docker save "$IMG" | gzip -6 > "$OUT"
+          ls -lh "$OUT"
+          sha256sum "$OUT" | tee "${OUT}.sha256"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tar actually loads (self-check before shipping)
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.save.outputs.out }}"
+          # 删掉本地镜像，强制走真正的导入路径，证明这个包可用
+          docker image rm "${{ inputs.image }}"
+          docker load -i "$OUT"
+          echo "--- 导入后核对 ---"
+          docker image inspect "${{ inputs.image }}" --format 'OK: {{.Id}} | {{.Architecture}}/{{.Os}} | {{len .RootFS.Layers}} layers'
+          # 再核一次层数与摘要，确保 tar 完整
+          docker inspect -f '{{range .RootFS.Layers}}{{println .}}{{end}}' "${{ inputs.image }}"
+
+      - name: Upload tar to GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.save.outputs.out }}"
+          gh release upload "${{ inputs.release_tag }}" "$OUT" "${OUT}.sha256" --clobber
+          echo "已上传到 Release ${{ inputs.release_tag }}"
+          gh release view "${{ inputs.release_tag }}" --json assets \
+            --jq '.assets[] | "\(.name)  \(.size/1048576 * 100 | floor / 100) MB"'
+
+      - name: Summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 离线导入包已生成
+
+          - 镜像：\`${{ inputs.image }}\`（**linux/amd64**）
+          - 资产：\`${{ steps.save.outputs.out }}\`
+          - 已通过 \`docker load\` 回环自检
+
+          下载地址：
+          \`\`\`
+          https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/${{ steps.save.outputs.out }}
+          \`\`\`
+
+          使用：
+          \`\`\`bash
+          docker load -i yyb-go-image-*.tar.gz
+          \`\`\`
+          EOF
