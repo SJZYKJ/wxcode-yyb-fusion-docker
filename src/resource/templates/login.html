@@ -19,14 +19,58 @@
       <button class="btn primary" id="submit" type="submit">登录</button>
     </form>
     <p class="auth-foot" id="registerLink"><a href="/register">创建用户账号</a></p>
+    <p class="auth-meta"><span>当前版本 <b class="app-version">v7</b></span><span class="meta-sep" aria-hidden="true">·</span><a href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">个人主页</a></p>
   </div></section>
-  <section class="auth-context"><div class="context-inner"><div class="context-kicker">Self-hosted operations</div><h2>账号、协议和任务都在一个受控入口中。</h2><p>登录后可按权限管理微信账号、面板连接和脚本运行。协议接口继续为青龙等自动化调用方独立提供。</p></div></section>
+  <section class="auth-context"><div class="context-inner">
+    <div class="context-kicker">Self-hosted operations</div>
+    <h2>账号、协议和任务都在一个受控入口中。</h2>
+    <p>登录后可按权限管理微信账号、面板连接和脚本运行。协议接口继续为青龙等自动化调用方独立提供。</p>
+
+    <div class="changelog">
+      <div class="changelog-head">
+        <h3>版本更新</h3>
+        <span class="changelog-now">当前版本 <b class="app-version">v7</b></span>
+      </div>
+      <ol class="changelog-list">
+        <li>
+          <span class="changelog-tag">v6</span>
+          <div class="changelog-body">
+            <b>修好了「串号」隐患（建议升级）</b>
+            <p>以前用普通账号登录网页后，能直接看到全部微信号——包括管理员的。现在网页登录只显示自己的账号，看不到别人的；青龙脚本带着令牌调用不受影响，照旧能取到全部账号的码。</p>
+          </div>
+        </li>
+        <li>
+          <span class="changelog-tag">v5</span>
+          <div class="changelog-body">
+            <b>版本号不再打乱仗</b>
+            <p>过去的版本号是按天重新计数的——昨天叫 v4，今天又从 v1 开始，回滚时根本比不出哪个更新。现在统一成 v1、v2、v3……只增不减，谁新谁旧一眼可见。</p>
+          </div>
+        </li>
+        <li>
+          <span class="changelog-tag">v4</span>
+          <div class="changelog-body">
+            <b>装上就默认安全</b>
+            <p>取码接口必须带令牌，不再留「空口令」的后门；外网的陌生人没法抢注管理员账号；密码连续试错会被限速；另外修掉一个能把人悄悄跳到站外网站的重定向漏洞。</p>
+          </div>
+        </li>
+      </ol>
+      <p class="changelog-more"><b>更早</b>：多个账号互相隔离、每个微信号可单独关闭「脚本可读」、一条命令完成部署、同时提供 amd64 与 arm64 镜像。</p>
+    </div>
+
+    <div class="context-foot">
+      <span class="context-foot-label">个人主页</span>
+      <a class="context-home" href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">zy.chun7.top<span class="context-home-ext" aria-hidden="true">↗</span></a>
+    </div>
+  </div></section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
 document.querySelector('.reveal').onclick=e=>{const p=$('password'),show=p.type==='password';p.type=show?'text':'password';e.currentTarget.setAttribute('aria-label',show?'隐藏密码':'显示密码')};
 $('form').onsubmit=async e=>{e.preventDefault();$('error').textContent='';$('submit').disabled=true;try{const params=new URLSearchParams(location.search),response=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,password:$('password').value,next:params.get('next')||'/'})}),json=await response.json();if(!response.ok||json.code!==0)throw new Error(json.msg||'登录失败');location.href=json.data.next||'/'}catch(error){$('error').textContent=error.message;$('submit').disabled=false}};
 if(new URLSearchParams(location.search).get('registration')==='disabled'){$('error').textContent='管理员已关闭新用户注册';$('registerLink').hidden=true}
+// 当前版本号取自镜像内的 /static/version.json（构建时由 VERSION 构建参数写入）。
+// 取不到就保留页面里的兜底值，不影响登录。
+fetch('/static/version.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{const v=d&&typeof d.version==='string'?d.version.trim():'';if(!v)return;document.querySelectorAll('.app-version').forEach(el=>{el.textContent=v})}).catch(()=>{});
 </script>
 </body>
 </html>

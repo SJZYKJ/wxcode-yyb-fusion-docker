@@ -20,6 +20,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 本地自建镜像不参与 v<N> 发布序列，登录页的「当前版本」会显示 local；
+        # CI 构建时写入真实版本号（见 .github/workflows/docker-publish.yml）
+        VERSION: local
     image: "${IMAGE_REPO:-chungg/wxcode-yyb-fusion}:${IMAGE_TAG:-latest}"
     container_name: wxcode-yyb-gateway
     restart: unless-stopped

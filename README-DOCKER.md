@@ -94,6 +94,17 @@ docker compose up -d        # 拉取 chungg/wxcode-yyb-fusion:latest 并启动
 `v<N>` 是正式发布号（`v1`、`v2`、`v3`…，**全局递增、永不重置**，回滚就用它），
 `latest` 永远指向最新一次构建（会动，别拿它做回滚）。
 
+**当前跑的是哪个版本，登录页会直接告诉你**：页面左栏底部和右栏「版本更新」标题旁都会显示版本号，取的是镜像内的 `/static/version.json`（构建时由 `VERSION` 构建参数写入）。想从命令行核对：
+
+```bash
+docker compose exec yyb-go cat /app/resource/static/version.json   # -> {"version":"v7"}
+# 或
+curl -s http://127.0.0.1:8088/static/version.json
+```
+
+该文件是公开静态资源（不含敏感信息），所以不需要令牌。本地 `compose.build.yaml` 自建的镜像
+不属于 `v<N>` 发布序列，这里会显示 `local`。
+
 ### 方式 B：本机自行构建
 
 ```bash

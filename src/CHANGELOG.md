@@ -9,6 +9,8 @@
 > 命中就整个 workflow 不触发。所以「在正文里解释为什么**没有**加 `[skip ci]`」
 > 会导致这一行文字把构建也一起跳过——想触发构建时，正文里也别出现这些字面量。
 
+- **v4.3.0 · 登录页新增「版本更新」记录与个人主页入口（本次）**：右栏在原说明下方加入更新记录时间线（v6 / v5 / v4 三条，全部用非技术表述，讲清「修好了什么、为什么值得升级」）与作者个人主页按钮（`zy.chun7.top`，新窗口打开、带 `rel="noopener noreferrer"`）；左栏表单下方补一行极简的「当前版本 · 个人主页」，因为右栏在 760px 以下会被隐藏，窄屏需要这个兜底入口。新增样式全部限定在 `auth.css` 尾部的新 class（`.changelog-*` / `.context-foot` / `.auth-meta`），不改动注册页共用的 `.auth-context` 基础规则；右栏在桌面端改为 `max-height:100vh` + `overflow-y:auto`，内容变高时栏内滚动而不是把登录表单一起顶出视口。
+- v4.3.0 · 首页版本号改为跟随镜像自动显示（不用再手工改登录页）：`Dockerfile` 新增 `ARG VERSION`，构建时把它写成镜像内的 `/app/resource/static/version.json`（公开静态文件，无需鉴权，值经 `sed` 白名单过滤保证是合法 JSON）；登录页 fetch 后在两处 `.app-version` 占位填入，取不到就保留页面兜底值，不影响登录。CI 在 `build-push-action` 用 `build-args` 传入本次 `v<N>`；`compose.build.yaml` 本地自建镜像写 `local`。真实进程验证 22/22 通过（登录页 200、三条记录与两处主页链接齐备、`/static/version.json` 返回 `{"version":"v7"}`、删掉该文件后前端回落到兜底值）。
 - **v4.2.5 · 修复横向越权（重要）**：登录控制台后，任何**普通账号**都能在浏览器里直接打开 `/instances` 拿到**全部**账号的 openid（含管理员名下的），并可用同一个会话按 `ref` 取到他人（含管理员）的 code —— 因为 `api_shared` 默认开启。根因是上一版的 `requireAPIToken` 把「有效的浏览器会话」当成与 API 令牌等价的凭据放行，却**不把会话身份注入请求上下文**，于是下游 handler 一律按「无会话的公开 API 调用」处理（`isAdminRequest` 恒为 true、`ListSharedAccounts` 不过滤归属）。
   现改为按**凭据类型**决定权限模型：
   - **API 令牌** → 公开 API 语义：不做归属过滤，可见性由每个账号的 `api_shared` 开关决定（青龙脚本行为完全不变）；

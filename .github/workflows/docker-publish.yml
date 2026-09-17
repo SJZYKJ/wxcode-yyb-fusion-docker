@@ -162,6 +162,10 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.tags }}
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.version }}
+          # 把本次版本号烧进镜像：登录页显示的「当前版本」读的就是它，
+          # 所以以后发版不必再改登录页（对应 Dockerfile 的 ARG VERSION）
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
           labels: ${{ steps.meta.outputs.labels }}
           # 复用构建缓存，后续构建只需 1-2 分钟
           cache-from: type=gha

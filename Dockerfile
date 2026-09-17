@@ -5,6 +5,11 @@ FROM alpine:3.21
 
 ARG TARGETARCH
 
+# 本次发布的版本号（如 v7），由 CI 用 --build-arg VERSION=v7 传入；
+# 本地自建不传就是 dev。写入镜像内的 /static/version.json，
+# 登录页读取它显示「当前版本」，所以以后发版不用再改登录页。
+ARG VERSION=dev
+
 RUN apk add --no-cache ca-certificates wget su-exec \
     && addgroup -S yyb && adduser -S -G yyb -h /app yyb
 
@@ -21,6 +26,14 @@ COPY wxcode/wxcode_2.1.0.apk /app/wxcode/wxcode_2.1.0.apk
 
 # entrypoint 以 root 启动（修复 bind-mount 数据目录权限）后降权到 yyb 运行
 COPY entrypoint.sh /entrypoint.sh
+
+# 登录页读取的版本号（公开静态文件，无需鉴权）。
+# 放在下方的 chmod 之前，好让它与其它静态资源一样被统一成 644。
+# sed 只保留 [A-Za-z0-9._-]，保证写出来的一定是合法 JSON 值。
+RUN printf '{"version":"%s"}\n' \
+      "$(printf '%s' "${VERSION}" | sed 's/[^A-Za-z0-9._-]//g')" \
+      > /app/resource/static/version.json \
+    && cat /app/resource/static/version.json
 
 # 数据目录（db/avatars/qr 用卷挂载）；entrypoint 会再修复 bind-mount 权限
 RUN mkdir -p /app/resource/db /app/resource/avatars /app/resource/qr \
