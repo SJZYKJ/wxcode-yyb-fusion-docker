@@ -616,8 +616,15 @@ func qingLongRepoRoots(raw string) ([]string, error) {
 	return repos, nil
 }
 
+// 任务目录（YYB_QINGLONG_REPO）的合法字符：Unicode 字母/数字 + _ . -
+//
+// 只用于拼 `task <root>/<scriptKey>` 命令，所以必须排除空白与 shell 元字符；
+// 但要允许非 ASCII —— 中文目录名（如 `code脚本`）是很常见的用法，
+// 而且脚本文件名本来就允许中文（见 validScriptKey 的 \p{L}）。
+var validQingLongTaskRootRe = regexp.MustCompile(`^[\p{L}\p{N}_.-]+(?:/[\p{L}\p{N}_.-]+)*$`)
+
 func validQingLongTaskRoot(root string) bool {
-	if !regexp.MustCompile(`^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$`).MatchString(root) {
+	if !validQingLongTaskRootRe.MatchString(root) {
 		return false
 	}
 	for _, segment := range strings.Split(root, "/") {
