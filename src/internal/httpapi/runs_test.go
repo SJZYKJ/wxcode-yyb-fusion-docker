@@ -180,11 +180,6 @@ func (f *fakeQingLong) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 func newRunsTestApp(t *testing.T, qlURL string) (*App, http.Handler, string) {
 	t.Helper()
-	return newRunsTestAppWithRepo(t, qlURL, "SuperNaiBA_YYB-GO-Script,525815266_YYB-Go-Enhanced/scripts")
-}
-
-func newRunsTestAppWithRepo(t *testing.T, qlURL, repo string) (*App, http.Handler, string) {
-	t.Helper()
 	app, err := NewApp(Config{
 		ResourceRoot:     t.TempDir(),
 		RequestTimeout:   time.Second,
@@ -194,7 +189,6 @@ func newRunsTestAppWithRepo(t *testing.T, qlURL, repo string) (*App, http.Handle
 		QingLongClientID: "client-id",
 		QingLongSecret:   "client-secret",
 		QingLongServer:   "yyb-go:8000",
-		QingLongRepo:     repo,
 	})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
@@ -230,31 +224,45 @@ func TestEnhancedRepoScriptsKeepTheirSourcePath(t *testing.T) {
 	}
 }
 
-// 端到端：把中文目录配成 YYB_QINGLONG_REPO，走 /api/qinglong/jobs 能列出该目录下的脚本。
-func TestQingLongJobsListChineseRepoScripts(t *testing.T) {
+// 端到端：「全部脚本」= 青龙里所有已建立的定时任务，**不需要任何配置**。
+//
+// 回归背景：此前列表要求任务命令里的目录恰好命中 YYB_QINGLONG_REPO，否则整条任务被
+// 静默丢弃。那个配置项没有 UI、文档里也没提、默认值还只认两个上游目录，于是
+// 「青龙已连接，但页面 0 个脚本」几乎必然发生（用户实际就是这么撞上的）。
+func TestQingLongJobsListEveryCronTask(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	fake.mu.Lock()
-	fake.crons = append(fake.crons, qingLongCron{
-		ID: 7, Name: "绿鼻子", Command: "task code脚本/绿鼻子.js", Schedule: "0 9 * * *",
-		Status: 1, IsDisabled: intPointer(1),
-	})
+	fake.crons = append(fake.crons,
+		qingLongCron{ID: 7, Name: "绿鼻子", Command: "task code脚本/绿鼻子.js", Schedule: "0 9 * * *", Status: 1, IsDisabled: intPointer(1)},
+		qingLongCron{ID: 8, Name: "美的会员副本", Command: "task 美的会员副本.js", Schedule: "5 9 * * *", Status: 1, IsDisabled: intPointer(1)},
+		qingLongCron{ID: 9, Name: "[YYB:1] 主用 · 绿鼻子", Command: "task code脚本/管理任务.js", Schedule: "0 9 * * *", Status: 1, IsDisabled: intPointer(1)},
+	)
 	fake.mu.Unlock()
 
-	_, handler, ref := newRunsTestAppWithRepo(t, server.URL, "code脚本")
+	_, handler, ref := newRunsTestApp(t, server.URL)
 
 	list := apiRequest(t, handler, http.MethodGet, "/api/qinglong/jobs?ref="+url.QueryEscape(ref), nil)
 	if list.Code != http.StatusOK {
 		t.Fatalf("jobs response = %d %s", list.Code, list.Body.String())
 	}
 	body := list.Body.String()
-	if !strings.Contains(body, "绿鼻子.js") {
-		t.Fatalf("中文目录下的脚本没有被列出: %s", body)
+	// 上游目录、中文目录、无目录三种任务都要在列表里
+	for _, want := range []string{"绿鼻子.js", "DTSH.py", "MDHY.js", "美的会员副本.js"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("定时任务 %s 没有被列出: %s", want, body)
+		}
 	}
-	if strings.Contains(body, "DTSH.py") || strings.Contains(body, "MDHY.js") {
-		t.Fatalf("非该目录的脚本不该出现: %s", body)
+	for _, unwanted := range []string{"eoos_checkin.py", "管理任务.js"} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("%s 不该出现: %s", unwanted, body)
+		}
+	}
+	// cron_total 是青龙返回的原始任务条数（6 条），页面靠它区分「没有任务」与「有任务但认不出脚本」
+	if !strings.Contains(body, `"cron_total":6`) {
+		t.Fatalf("cron_total 应为 6: %s", body)
 	}
 
-	// 用中文目录里的脚本建任务，命令必须原样保留中文路径
+	// 中文目录里的脚本：建出来的命令必须原样保留中文路径
 	enable := apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
 		"ref": ref, "script_key": "绿鼻子.js", "enabled": true,
 	})
@@ -262,48 +270,59 @@ func TestQingLongJobsListChineseRepoScripts(t *testing.T) {
 		t.Fatalf("enable response = %d %s", enable.Code, enable.Body.String())
 	}
 	fake.mu.Lock()
-	defer fake.mu.Unlock()
 	if got := fake.commands[len(fake.commands)-1]; got != "task code脚本/绿鼻子.js" {
+		t.Fatalf("managed command = %q", got)
+	}
+	fake.mu.Unlock()
+
+	// 没有目录的任务：命令就用裸脚本名，不补任何前缀
+	enable = apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
+		"ref": ref, "script_key": "美的会员副本.js", "enabled": true,
+	})
+	if enable.Code != http.StatusOK {
+		t.Fatalf("enable response = %d %s", enable.Code, enable.Body.String())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if got := fake.commands[len(fake.commands)-1]; got != "task 美的会员副本.js" {
 		t.Fatalf("managed command = %q", got)
 	}
 }
 
-func TestQingLongRepoRoots(t *testing.T) {
-	repos, err := qingLongRepoRoots(" SuperNaiBA_YYB-GO-Script,525815266_YYB-Go-Enhanced/scripts;SuperNaiBA_YYB-GO-Script ")
-	if err != nil {
-		t.Fatalf("qingLongRepoRoots() error = %v", err)
+func TestParseScriptKeyFromCron(t *testing.T) {
+	cases := []struct {
+		desc  string
+		cron  qingLongCron
+		key   string
+		root  string
+		valid bool
+	}{
+		{"中文目录", qingLongCron{Name: "绿鼻子", Command: "task code脚本/绿鼻子.js"}, "绿鼻子.js", "code脚本", true},
+		{"多级目录", qingLongCron{Name: "DT生活", Command: "task 525815266_YYB-Go-Enhanced/scripts/DTSH.py"}, "DTSH.py", "525815266_YYB-Go-Enhanced/scripts", true},
+		{"无目录", qingLongCron{Name: "美的", Command: "task 美的会员.js"}, "美的会员.js", "", true},
+		{"node 绝对路径", qingLongCron{Name: "美的", Command: "node /ql/scripts/美的会员.js"}, "美的会员.js", "", true},
+		{"python 绝对路径带中文目录", qingLongCron{Name: "绿鼻子", Command: "python3 /ql/scripts/code脚本/绿鼻子.py"}, "绿鼻子.py", "code脚本", true},
+		{"追加参数", qingLongCron{Name: "美的", Command: "task 美的会员.js now"}, "美的会员.js", "", true},
+		{"带引号", qingLongCron{Name: "美的", Command: `task "code脚本/绿鼻子.js"`}, "绿鼻子.js", "code脚本", true},
+		{"带重定向", qingLongCron{Name: "美的", Command: "node /ql/scripts/美的会员.js >/dev/null 2>&1"}, "美的会员.js", "", true},
+		{"反斜杠分隔", qingLongCron{Name: "美的", Command: `task code脚本\美的会员.js`}, "美的会员.js", "code脚本", true},
+		{"网关自建的账号任务", qingLongCron{Name: "[YYB:1] 主用 · 绿鼻子", Command: "task code脚本/绿鼻子.js"}, "", "", false},
+		{"被忽略的推送脚本", qingLongCron{Name: "推送", Command: "task SendNotify.py"}, "", "", false},
+		{"非脚本命令", qingLongCron{Name: "拉库", Command: "ql repo https://github.com/x/y.git"}, "", "", false},
+		{"空命令", qingLongCron{Name: "空", Command: ""}, "", "", false},
+		{"路径穿越", qingLongCron{Name: "坏", Command: "task ../evil/x.js"}, "", "", false},
+		{"shell 元字符", qingLongCron{Name: "坏", Command: "task code脚本;rm -rf /x.js"}, "", "", false},
 	}
-	if got := strings.Join(repos, ","); got != "SuperNaiBA_YYB-GO-Script,525815266_YYB-Go-Enhanced/scripts" {
-		t.Fatalf("repos = %q", got)
-	}
-	if _, err := qingLongRepoRoots("../scripts"); err == nil {
-		t.Fatal("invalid repository path was accepted")
-	}
-}
-
-// 中文目录名（如 `code脚本`）必须能配进 YYB_QINGLONG_REPO。
-//
-// 回归背景：脚本文件名一直允许中文（validScriptKey 用 \p{L}），
-// 但目录名以前只认 ASCII，于是 `task code脚本/绿鼻子.js` 这类任务
-// 永远匹配不上，「账号运行管理」页的脚本列表恒为空。
-func TestQingLongRepoRootsAcceptsUnicodeDirectory(t *testing.T) {
-	repos, err := qingLongRepoRoots("code脚本,青龙脚本修改/code脚本")
-	if err != nil {
-		t.Fatalf("中文目录被拒绝: %v", err)
-	}
-	if got := strings.Join(repos, ","); got != "code脚本,青龙脚本修改/code脚本" {
-		t.Fatalf("repos = %q", got)
-	}
-
-	key, root, ok := parseScriptKeyFromCron(qingLongCron{Name: "绿鼻子", Command: "task code脚本/绿鼻子.js"}, repos)
-	if !ok || key != "绿鼻子.js" || root != "code脚本" {
-		t.Fatalf("中文路径解析失败: ok=%v key=%q root=%q", ok, key, root)
-	}
-
-	// 放宽非 ASCII 之后，路径穿越与 shell 元字符仍必须被挡住
-	for _, bad := range []string{"../scripts", "a/../../b", "code 脚本", "code脚本;rm -rf /", "code$脚本", "code/脚本|x"} {
-		if _, err := qingLongRepoRoots(bad); err == nil {
-			t.Fatalf("非法目录被接受: %q", bad)
+	for _, tc := range cases {
+		key, root, ok := parseScriptKeyFromCron(tc.cron)
+		if ok != tc.valid {
+			t.Fatalf("%s: ok = %v, want %v (key=%q root=%q)", tc.desc, ok, tc.valid, key, root)
+		}
+		if !tc.valid {
+			continue
+		}
+		if key != tc.key || root != tc.root {
+			t.Fatalf("%s: got key=%q root=%q, want key=%q root=%q", tc.desc, key, root, tc.key, tc.root)
 		}
 	}
 }

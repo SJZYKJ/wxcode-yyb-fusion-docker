@@ -41,7 +41,6 @@ type Config struct {
 	QingLongClientID  string
 	QingLongSecret    string
 	QingLongServer    string
-	QingLongRepo      string
 	AuthDriver        string
 	AuthDSN           string
 	AuthMySQLDSN      string
@@ -128,9 +127,6 @@ func NewApp(cfg Config) (*App, error) {
 	}
 	if cfg.QingLongServer == "" {
 		cfg.QingLongServer = "yyb-go:8000"
-	}
-	if cfg.QingLongRepo == "" {
-		cfg.QingLongRepo = "SuperNaiBA_YYB-GO-Script,525815266_YYB-Go-Enhanced/scripts"
 	}
 	if cfg.SessionDuration <= 0 {
 		cfg.SessionDuration = 7 * 24 * time.Hour

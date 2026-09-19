@@ -106,7 +106,6 @@ func main() {
 		QingLongClientID:  clientID,
 		QingLongSecret:    clientSecret,
 		QingLongServer:    os.Getenv("YYB_QINGLONG_SERVER"),
-		QingLongRepo:      os.Getenv("YYB_QINGLONG_REPO"),
 		AuthDriver:        authDriver,
 		AuthDSN:           os.Getenv("YYB_AUTH_DSN"),
 		AuthMySQLDSN:      legacyAuthDSN,

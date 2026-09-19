@@ -142,6 +142,9 @@ func (a *App) handleQingLongJobs(w http.ResponseWriter, r *http.Request) {
 		"account": acc.Public(),
 		"jobs":    out,
 		"count":   len(out),
+		// 青龙实际返回的定时任务条数（含被忽略的）。列表为空时用它区分
+		// 「青龙里就没有任务」和「有任务但都不是脚本」，页面据此给不同提示。
+		"cron_total": len(cronsByID),
 	})
 }
 
@@ -417,41 +420,34 @@ func (a *App) handleQingLongPush(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// 「可用脚本」池 = 青龙里**所有已建立的定时任务**。
+//
+// 早前的实现要求任务命令里的目录恰好命中 YYB_QINGLONG_REPO，否则整条任务被静默丢弃。
+// 那个配置项没有 UI、文档里也没提，默认值还只认两个上游目录，于是很常见的结局是：
+// 青龙明明连着、任务也有一堆，页面却恒显示「0 个脚本」。现在改为全量收录 ——
+// 只要命令能解析出 `<目录>/<脚本名>.js|py`，就进池子，不需要任何额外配置。
 func (a *App) scriptCatalog(ctx context.Context) ([]scriptSource, map[int64]qingLongCron, error) {
 	if !a.qinglong.configured() {
 		return nil, nil, fmt.Errorf("面板 OpenAPI 未配置")
 	}
-	repos, err := qingLongRepoRoots(a.cfg.QingLongRepo)
+	crons, err := a.qinglong.listCrons(ctx, "")
 	if err != nil {
 		return nil, nil, err
 	}
 	byKey := make(map[string]scriptSource)
-	byID := make(map[int64]qingLongCron)
-
-	var crons []qingLongCron
-	for _, repo := range repos {
-		list, err := a.qinglong.listCrons(ctx, repo)
-		if err == nil && len(list) > 0 {
-			crons = append(crons, list...)
-		}
-	}
-	if len(crons) == 0 {
-		list, err := a.qinglong.listCrons(ctx, "")
-		if err != nil {
-			return nil, nil, err
-		}
-		crons = list
-	}
-
+	byID := make(map[int64]qingLongCron, len(crons))
 	for _, cron := range crons {
 		byID[cron.ID] = cron
-		key, repo, ok := parseScriptKeyFromCron(cron, repos)
+		key, root, ok := parseScriptKeyFromCron(cron)
 		if !ok {
 			continue
 		}
-		if _, exists := byKey[key]; !exists {
-			byKey[key] = scriptSource{Key: key, Name: cron.Name, Schedule: cron.getSchedule(), TaskRoot: repo, Cron: cron}
+		// 同名脚本（不同目录）只保留先出现的那条：key 就是脚本在库里的标识，
+		// account_script_jobs 存的也是它，换成带目录的完整路径会让历史数据失效。
+		if _, exists := byKey[key]; exists {
+			continue
 		}
+		byKey[key] = scriptSource{Key: key, Name: cron.Name, Schedule: cron.getSchedule(), TaskRoot: root, Cron: cron}
 	}
 	out := make([]scriptSource, 0, len(byKey))
 	for _, source := range byKey {
@@ -463,33 +459,78 @@ func (a *App) scriptCatalog(ctx context.Context) ([]scriptSource, map[int64]qing
 	return out, byID, nil
 }
 
-func parseScriptKeyFromCron(cron qingLongCron, repos []string) (string, string, bool) {
+// 从定时任务里解析出脚本。
+//
+// 返回的 key 是脚本文件名 —— 它同时是脚本在库里的标识（历史数据存的就是它），
+// 所以刻意不带目录；root 是它所在目录，可能为空（脚本直接放在脚本目录根部）。
+// 认得出这些常见写法：
+//
+//	task code脚本/绿鼻子.js                          -> code脚本                        / 绿鼻子.js
+//	task 525815266_YYB-Go-Enhanced/scripts/DTSH.py   -> 525815266_YYB-Go-Enhanced/scripts / DTSH.py
+//	node /ql/scripts/美的会员.js                      -> ""                              / 美的会员.js
+//	task 绿鼻子.js                                    -> ""                              / 绿鼻子.js
+func parseScriptKeyFromCron(cron qingLongCron) (key, root string, ok bool) {
+	// 网关自己给账号建的定时任务（名字带 [YYB:<账号ID>] 前缀）不算「可用脚本」
 	if strings.HasPrefix(cron.Name, "[YYB:") {
 		return "", "", false
 	}
-	cmd := strings.TrimSpace(cron.Command)
-	for _, p := range []string{"task ", "node ", "python3 ", "python "} {
-		if strings.HasPrefix(cmd, p) {
-			cmd = strings.TrimSpace(strings.TrimPrefix(cmd, p))
-		}
+	path := scriptPathFromCommand(cron.Command)
+	if path == "" {
+		return "", "", false
 	}
-	for _, repo := range repos {
-		cleanRepo := strings.Trim(strings.TrimSpace(repo), "/")
-		prefix := cleanRepo + "/"
-		if strings.HasPrefix(cmd, prefix) {
-			key := strings.TrimSpace(strings.TrimPrefix(cmd, prefix))
-			if validScriptKey.MatchString(key) && !isIgnoredScriptKey(key) {
-				return key, cleanRepo, true
+	idx := strings.LastIndex(path, "/")
+	if idx == -1 {
+		if !validScriptKey.MatchString(path) || isIgnoredScriptKey(path) {
+			return "", "", false
+		}
+		return path, "", true
+	}
+	root = strings.Trim(path[:idx], "/")
+	key = strings.TrimSpace(path[idx+1:])
+	if root != "" && !validQingLongTaskRoot(root) {
+		return "", "", false
+	}
+	if !validScriptKey.MatchString(key) || isIgnoredScriptKey(key) {
+		return "", "", false
+	}
+	return key, root, true
+}
+
+// 把定时任务的命令还原成「相对脚本目录的脚本路径」，认不出来就返回空串。
+//
+// 只取命令里的第一个参数：`task x.js now`、`node x.js > /dev/null` 这类写法后面的
+// 内容都不是脚本路径。绝对路径（`/ql/scripts/x.js`）会切到脚本目录之后的部分。
+func scriptPathFromCommand(command string) string {
+	cmd := strings.TrimSpace(command)
+	// 运行器前缀可能叠加，例如 `node task x.js`，所以循环剥离
+	for {
+		stripped := false
+		for _, prefix := range []string{"task", "node", "python3", "python", "bash", "sh", "ts-node"} {
+			if strings.HasPrefix(cmd, prefix+" ") {
+				cmd = strings.TrimSpace(cmd[len(prefix):])
+				stripped = true
+				break
 			}
 		}
-		if idx := strings.Index(cmd, "/"+cleanRepo+"/"); idx != -1 {
-			key := strings.TrimSpace(cmd[idx+len("/"+cleanRepo+"/"):])
-			if validScriptKey.MatchString(key) && !isIgnoredScriptKey(key) {
-				return key, cleanRepo, true
-			}
+		if !stripped {
+			break
 		}
 	}
-	return "", "", false
+	if fields := strings.Fields(cmd); len(fields) > 0 {
+		cmd = fields[0]
+	}
+	cmd = strings.Trim(cmd, `"'`)
+	cmd = strings.ReplaceAll(cmd, `\`, "/")
+	if strings.HasPrefix(cmd, "/") {
+		// 绝对路径：`/ql/scripts/...`、`/ql/data/scripts/...` 都取 /scripts/ 之后
+		const marker = "/scripts/"
+		idx := strings.LastIndex(cmd, marker)
+		if idx == -1 {
+			return ""
+		}
+		cmd = cmd[idx+len(marker):]
+	}
+	return strings.Trim(cmd, "/")
 }
 
 func isIgnoredScriptKey(key string) bool {
@@ -567,8 +608,10 @@ func (a *App) accountTaskSpec(accountID int64, taskRoot, scriptKey string, setti
 	if !regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`).MatchString(a.cfg.QingLongServer) {
 		return "", "", fmt.Errorf("YYB_QINGLONG_SERVER 格式不合法")
 	}
-	if !validQingLongTaskRoot(taskRoot) {
-		return "", "", fmt.Errorf("YYB_QINGLONG_REPO 格式不合法")
+	// taskRoot 为空表示脚本直接放在青龙的脚本目录根部（找到的定时任务就是这么写的），
+	// 这时命令就用裸脚本名，别再补目录前缀
+	if taskRoot != "" && !validQingLongTaskRoot(taskRoot) {
+		return "", "", fmt.Errorf("脚本目录不合法")
 	}
 	pushKey, pushPlusToken, pushPlusTopic, qywxKey := "''", "''", "''", "''"
 	switch setting.Channel {
@@ -582,7 +625,10 @@ func (a *App) accountTaskSpec(accountID int64, taskRoot, scriptKey string, setti
 	case "qywx":
 		qywxKey = envReference(setting.TokenEnvName)
 	}
-	command := fmt.Sprintf("task %s/%s", taskRoot, scriptKey)
+	command := "task " + scriptKey
+	if taskRoot != "" {
+		command = fmt.Sprintf("task %s/%s", taskRoot, scriptKey)
+	}
 	taskBefore := fmt.Sprintf(
 		"export YYB_SERVER='%s@%d'; export PUSH_KEY=%s; export PUSH_PLUS_TOKEN=%s; export PUSH_PLUS_USER=%s; export QYWX_KEY=%s",
 		a.cfg.QingLongServer, accountID, pushKey, pushPlusToken, pushPlusTopic, qywxKey,
@@ -590,37 +636,11 @@ func (a *App) accountTaskSpec(accountID int64, taskRoot, scriptKey string, setti
 	return command, taskBefore, nil
 }
 
-func qingLongRepoRoots(raw string) ([]string, error) {
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r'
-	})
-	seen := make(map[string]struct{}, len(parts))
-	repos := make([]string, 0, len(parts))
-	for _, part := range parts {
-		repo := strings.Trim(strings.TrimSpace(part), "/")
-		if repo == "" {
-			continue
-		}
-		if !validQingLongTaskRoot(repo) {
-			return nil, fmt.Errorf("YYB_QINGLONG_REPO 格式不合法: %s", repo)
-		}
-		if _, exists := seen[repo]; exists {
-			continue
-		}
-		seen[repo] = struct{}{}
-		repos = append(repos, repo)
-	}
-	if len(repos) == 0 {
-		return nil, fmt.Errorf("YYB_QINGLONG_REPO 未配置")
-	}
-	return repos, nil
-}
-
-// 任务目录（YYB_QINGLONG_REPO）的合法字符：Unicode 字母/数字 + _ . -
+// 脚本目录的合法字符：Unicode 字母/数字 + _ . -
 //
-// 只用于拼 `task <root>/<scriptKey>` 命令，所以必须排除空白与 shell 元字符；
-// 但要允许非 ASCII —— 中文目录名（如 `code脚本`）是很常见的用法，
-// 而且脚本文件名本来就允许中文（见 validScriptKey 的 \p{L}）。
+// 目录来自定时任务命令本身（如 `task code脚本/绿鼻子.js`），会用去拼
+// `task <root>/<key>` 命令，所以必须排除空白与 shell 元字符；但要允许非 ASCII ——
+// 中文目录名很常见，而且脚本文件名本来就允许中文（见 validScriptKey 的 \p{L}）。
 var validQingLongTaskRootRe = regexp.MustCompile(`^[\p{L}\p{N}_.-]+(?:/[\p{L}\p{N}_.-]+)*$`)
 
 func validQingLongTaskRoot(root string) bool {

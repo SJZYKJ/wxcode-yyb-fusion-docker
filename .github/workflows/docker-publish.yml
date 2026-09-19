@@ -25,18 +25,29 @@
 #   每次构建推两个标签，命名全部由 CI 自动生成，不需要手工维护版本文件：
 #
 #     v<N>      正式发布号。N 是**全局单调递增**的整数，永不重置、永不复用。
-#               固定版本 / 回滚都用它，例：v4 → v5 → v6。
+#               固定版本 / 回滚都用它，例：v7 → v8 → v9。
 #     latest    默认分支最新一次成功构建的快捷方式（会动，别用它做回滚）。
 #
 #   ⚠️ 历史教训：旧方案是 SHA-<月日>-V<n>.0，序号**按天重置**——于是
 #   昨天的 V4.0 比今天的 V1.0 旧，序号之间无法比较大小，每次构建的标签
 #   都不一样也没法判断先后。v2 方案用全局计数器彻底解决这一点。
 #
-#   N 的来源：本仓库所有 `v<N>` 标签，加上历史遗留 `SHA-<月日>-V<n>.<m>`
-#   标签里的最大序号，取最大值 + 1。所以迁移后第一次构建是 v5
-#   （历史 4 个版本已回填为 v1..v4，见 .github/workflows/retag.yml）。
+#   N 的来源（两条路，按顺序判断）：
+#     ① 本次提交上**已经有人工打的** `v<N>` 或 `v<N>.<M>` 标签 → 直接沿用。
+#        想发一个指定的号（如 v7.1）就手工打标签，不必改任何代码：
+#          git tag v7.1 && git push origin v7.1 && git push origin HEAD:main
+#        ⚠️ 顺序不能反：标签要先到远端，否则 CI 算号时看不到它。
+#     ② 没有指定 → 全仓库最大序号 + 1。兼容 `v<N>`、`v<N>.<M>`、历史遗留
+#        `SHA-<月日>-V<n>.<m>`；只比较主号，所以 v7.1 之后的自动号是 v8。
 #   标签与 Release 由 CI 在构建成功后自动创建，GitHub 与 Docker Hub
 #   两边的版本号始终一致；提交 SHA 记录在 Release 说明里，不占用标签名。
+#
+#   ⚠️ 别把作废的号留在仓库里：序号取自「现有标签的最大值 + 1」，
+#   旧标签没删干净，下一个号就会跳号。清理在 Actions →
+#   「删除 Docker Hub 镜像标签」+ 删掉对应的 Git 标签/Release。
+#
+#   ⚠️ README 顶部的「版本摘要」是**人工维护的用户可见版本号**，和这里的
+#   自动计数不是一回事，允许不一致；发版时按需手工加条目即可。
 #
 # —— 构建结果 ——
 #   镜像地址：<DOCKERHUB_USERNAME>/wxcode-yyb-fusion:latest
@@ -119,22 +130,33 @@ jobs:
           set -uo pipefail
           git fetch --tags --force --quiet 2>/dev/null || true
 
-          # 序号来源：全仓库最大序号 + 1，**永不按天重置、永不复用**。
-          # 同时兼容历史遗留的 SHA-<月日>-V<n>.<m>，保证迁移前后单调递增。
-          #   第 1 条 sed：v12          -> 12
-          #   第 2 条 sed：SHA-0917-V4.0 -> 4
-          MAX=$(git tag -l | sed -nE \
-                  -e 's/^v([0-9]+)$/\1/p' \
-                  -e 's/^SHA-[0-9]{4}-V([0-9]+)\.[0-9]+$/\1/p' \
-                | sort -n | tail -1)
-          MAX=${MAX:-0}
-          N=$((MAX + 1))
-          VERSION="v${N}"
+          # ① 本次提交上如果已经有人手工打过版本标签，就直接沿用 ——
+          #    发一个「指定号」（如 v7.1）不需要改任何代码或配置：
+          #      git tag v7.1 && git push origin v7.1 && git push origin HEAD:main
+          #    顺序不能反：标签必须先到远端，否则 CI 算号时还看不到它。
+          PINNED=$(git tag --points-at "${GITHUB_SHA}" \
+                     | grep -E '^v[0-9]+(\.[0-9]+)?$' | sort -V | tail -1 || true)
+          if [ -n "${PINNED}" ]; then
+            VERSION="${PINNED}"
+            NOTE="取自本次提交上的标签（人工指定的发布号）"
+          else
+            # ② 没有指定就自动递增：全仓库最大序号 + 1，**永不按天重置、永不复用**。
+            #    同时兼容：v12 -> 12、v7.1 -> 7、历史遗留 SHA-0917-V4.0 -> 4。
+            #    注意只取「主号」比较大小，所以 v7.1 之后的自动号是 v8（不是 v7.2）。
+            MAX=$(git tag -l | sed -nE \
+                    -e 's/^v([0-9]+)(\.[0-9]+)?$/\1/p' \
+                    -e 's/^SHA-[0-9]{4}-V([0-9]+)\.[0-9]+$/\1/p' \
+                  | sort -n | tail -1)
+            MAX=${MAX:-0}
+            N=$((MAX + 1))
+            VERSION="v${N}"
+            NOTE="全局第 ${N} 号发布；序号单调递增、永不重置，取自本仓库 Git 标签"
+          fi
 
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "### 本次版本：\`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "（全局第 ${N} 号发布；序号单调递增、永不重置，取自本仓库 Git 标签）" >> "$GITHUB_STEP_SUMMARY"
+          echo "（${NOTE}）" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 生成镜像标签与元数据（latest / 可选自定义标签）
         id: meta

@@ -364,7 +364,8 @@ v4.0.0 起改为**单服务纯 Docker**：
 - **没有 root 手机能不能用？** 能。原生扫码登录完全够用，wxcode 设备通道只是锦上添花。
 - **面板登录不上？** 首个管理员从**内网**访问 `/register` 注册即可（自动成为管理员，v4.2.4 起公网来源会被拒绝）；也可以在 `.env` 里设 `YYB_ADMIN_USER` / `YYB_ADMIN_PASSWORD` 后重启，网关会自动创建该管理员。完全不需要 Web 鉴权时可设 `YYB_AUTH_DRIVER=none`（注意：此时工作台的「调用配置」会被访问令牌拦住，见第五节）。
 - **普通用户点「添加账号/运行管理」被跳到个人设置？** v4.2.2 已修复：这些页面不再要求管理员权限，普通用户可正常使用，只是账号列表里只有自己的账号。
-- **「账号运行管理」页显示 0 个脚本、提示"该账号尚未配置脚本任务"？** 这个列表**不是扫青龙的脚本目录，而是从青龙的「定时任务」反推**出来的：只有命令形如 `task <目录>/<脚本名>.js|py`、且 `<目录>` 命中 `.env` 里 `YYB_QINGLONG_REPO` 的定时任务才会被收进来。因此两种情况都会让列表恒为 0：① 青龙里根本没有对应的定时任务（只有脚本文件不算）；② 任务命令里的目录与 `YYB_QINGLONG_REPO` 对不上 —— 它默认只认两个上游目录（`SuperNaiBA_YYB-GO-Script`、`525815266_YYB-Go-Enhanced/scripts`）。把自己的脚本目录填进去（例如 `YYB_QINGLONG_REPO=code脚本`，**支持中文目录名**）并**重启容器**即可。另外左下角「青龙已连接」只说明 OpenAPI 凭据能换到 token，和脚本列表是两条独立路径，**已连接 + 0 脚本是正常组合**。
+- **「账号运行管理」页显示 0 个脚本、提示"该账号尚未配置脚本任务"？** 这个列表**不是扫青龙的脚本目录，而是读青龙的「定时任务」**：命令形如 `task <目录>/<脚本名>.js|py` 的任务就会被收进来，`<目录>` 是什么、是不是中文、有没有目录都不影响（`node /ql/scripts/xxx.js` 这类绝对路径也认）。所以列表为空只有两种可能：① 青龙里确实**没有**任何定时任务（只有脚本文件不算，得先建任务）；② 有任务，但命令认不出脚本（比如写成了 `task 绿鼻子`、少了扩展名，或者任务是拉库/通知类的）。v7.1 起页面会直接告诉你是哪一种。
+  另外：`YYB_QINGLONG_REPO` 这个环境变量**已废弃**，填了也不再影响列表，可以整行删掉。左下角「青龙已连接」只说明 OpenAPI 凭据能换到 token，和脚本列表是两条独立路径，**已连接 + 0 脚本是正常组合**。
 - **普通用户扫码添加的账号，管理员能看到吗？** 不能。为保护账号隐私，账号只对其归属用户可见；管理员能看到的是"未归属"（老数据）和自己名下的账号。如需统一管理，可由该用户自行在控制台操作，或将其角色提升为 `admin`。
 - **脚本还能读到所有账号吗？** 能（v4.2.2 起默认不变）。公开接口不做归属过滤，只是会跳过拥有者关闭了「脚本可读」的账号。反之，某个用户不想让自己的账号被脚本读到，在工作台选中该账号点「脚本可读：关」即可。
 - **公网部署安全吗？** v4.2.4 起**默认安全**：取码接口强制鉴权（令牌未配置会自动生成并落库，不是裸奔），公开注册默认关闭且首个管理员只能从内网注册，登录限速不可被伪造 `X-Forwarded-For` 绕过。仅当你显式设置 `YYB_ALLOW_NO_AUTH=true` 或 `YYB_ALLOW_REGISTRATION=true` 时才需要额外评估；另外建议公网暴露时把 `--bind` 设为 `127.0.0.1` 交给反代，并设 `YYB_TRUST_PROXY=true`、开启 HTTPS。
@@ -375,6 +376,8 @@ v4.0.0 起改为**单服务纯 Docker**：
 - **wxcode 手机 hook 的 `/wxcode/register` 报 401？** v4.2.4 起该接口纳入令牌保护。推荐改用静态配置：`.env` 里 `WXCODE_URLS=http://<手机IP>:8088`（Docker 部署的标准做法），就不需要 hook 自注册。
 - **填了令牌后浏览器登不上控制台？** 不会。`POST /login`（带 `username`）与登录页始终放行，工作台用会话 Cookie 访问接口也不受令牌限制。
 - **改了源码怎么重新出镜像？** ① `./build-gateway.sh`（交叉编译 amd64+arm64）→ ② `cp -r src/resource/templates/. gateway/resource/templates/` → ③ `docker compose -f compose.build.yaml up -d --build`。只改前端模板的话第①步可以跳过。
-- **怎么发新版本到 Docker Hub？** 推送到 `main` 分支即可，GitHub Actions 会自动构建双架构镜像并打上 `latest` 与 `v<N>` 两个标签（`v<N>` 是全局递增的正式发布号，CI 每次 +1 并自动建同名 Release；提交 SHA 记录在 Release 说明里）。注意：改 Go 代码必须先跑 `build-gateway.sh` 并提交 `gateway/` 里的二进制，CI 只做打包不做编译。
+- **怎么发新版本到 Docker Hub？** 推送到 `main` 分支即可，GitHub Actions 会自动构建双架构镜像并打上 `latest` 与 `v<N>` 两个标签（提交 SHA 记录在 Release 说明里）。注意：改 Go 代码必须先跑 `build-gateway.sh` 并提交 `gateway/` 里的二进制，CI 只做打包不做编译。
+  版本号按两条路决定：**本次提交上已经有人工打的** `v<N>` / `v<N>.<M>` 标签就直接沿用（想要指定的号，例如发 `v7.1`：`git tag v7.1 && git push origin v7.1` **先推标签**，再 `git push origin HEAD:main`）；没有就取全仓库最大主号 + 1（`v7.1` 之后自动是 `v8`、`v9`…）。
+- **怎么删掉发错的镜像标签？** 本地通常连不上 `hub.docker.com`（`auth.docker.io` 也常不通），所以走 CI：Actions → **「删除 Docker Hub 镜像标签（维护）」** → Run workflow，`tags` 填 `v7 v8 v9`，`confirm` 填 `DELETE`。**它只删 Docker Hub 上的镜像，Git 标签和 Release 要另外删**（`git push origin --delete v7`、GitHub Releases 页面删对应条目）——序号取自「现有 Git 标签的最大值 + 1」，留着一个作废标签会让后续号跳号，所以两边要一起清。
 - **想把某个已有镜像改个标签名（不重新构建）？** 跑 `Retag (重新挂标签，不重建)` 工作流，填源标签和目标标签即可；它用 `docker buildx imagetools create` 直接改 registry 里的 manifest，几秒钟完成，层数据不动。
 - **数据在哪？** 默认 `${DATA_DIR:-./data}/db`（SQLite）、`/qr`（二维码）、`/avatars`，重启不丢；换盘位置改 `.env` 里的 `DATA_DIR`。

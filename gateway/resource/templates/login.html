@@ -33,6 +33,13 @@
       </div>
       <ol class="changelog-list">
         <li>
+          <span class="changelog-tag">v7.1</span>
+          <div class="changelog-body">
+            <b>「账号运行管理」能列出你的脚本了</b>
+            <p>这一页的脚本列表改成直接读青龙里的「全部定时任务」，不再要求任务目录事先配置成某个名字——以前漏配就一个脚本都显示不出来。列表为空时也会说清楚是「青龙里确实没有任务」还是「任务命令认不出脚本」。</p>
+          </div>
+        </li>
+        <li>
           <span class="changelog-tag">v6</span>
           <div class="changelog-body">
             <b>修好了「串号」隐患（建议升级）</b>
@@ -46,15 +53,8 @@
             <p>取码接口必须带令牌，不再留「空口令」的后门；外网的陌生人没法抢注管理员账号；密码连续试错会被限速；另外修掉一个能把人悄悄跳到站外网站的重定向漏洞。</p>
           </div>
         </li>
-        <li>
-          <span class="changelog-tag">v4</span>
-          <div class="changelog-body">
-            <b>部署更省事</b>
-            <p>取码接口支持配置访问令牌；部署方式拆成「直接拉镜像」和「本机自己构建」两种；再加上自动构建的双架构镜像（amd64 / arm64）和一条命令搞定的一键部署脚本。</p>
-          </div>
-        </li>
       </ol>
-      <p class="changelog-more"><b>更早</b>：多个账号互相隔离（每人只看到自己扫码添加的微信）、每个微信号可单独关闭「脚本可读」、修复数据目录权限导致的启动失败。</p>
+      <p class="changelog-more"><b>更早</b>：取码接口支持访问令牌、双架构镜像与一键部署脚本（v4）；多个账号互相隔离（每人只看到自己扫码添加的微信）、每个微信号可单独关闭「脚本可读」、修复数据目录权限导致的启动失败。</p>
     </div>
 
     <div class="context-foot">

@@ -1,0 +1,87 @@
+# ==============================================================================
+# 维护工具：删除 Docker Hub 上已经推送的镜像标签
+#
+# 为什么需要它：Docker Hub 的删标签 API 只能在能访问 hub.docker.com 的网络里调，
+# 而本机/内网常常访问不到（连 auth.docker.io 都打不通）。CI runner 一定通，
+# 而且它已经持有 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret，所以放在这里最省事。
+#
+# 怎么用：仓库 Actions → 「删除 Docker Hub 镜像标签（维护）」→ Run workflow
+#   tags     要删的标签，空格或逗号分隔，例：v7 v8 v9 v10 v11 v12
+#   confirm  必须原样输入 DELETE，防止手滑
+#
+# ⚠️ 删掉标签只影响 Docker Hub 上的镜像，**不影响 Git 标签和 Release**。
+#    要让「版本号」回退/重排，Git 标签那边也要一起删（见 README-DOCKER.md 的发布一节）。
+# ⚠️ 序号取自「现有 Git 标签的最大值 + 1」，所以删之前想清楚：漏删会导致跳号。
+# ==============================================================================
+
+name: 删除 Docker Hub 镜像标签（维护）
+
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: '要删除的标签，空格或逗号分隔（例：v7 v8 v9 v10 v11 v12）'
+        required: true
+      confirm:
+        description: '输入 DELETE 确认删除（区分大小写）'
+        required: true
+
+env:
+  IMAGE_NAME: wxcode-yyb-fusion
+
+jobs:
+  delete-tags:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 校验确认口令
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DELETE" ]; then
+            echo "::error::确认口令不正确（应为 DELETE），已中止"
+            exit 1
+          fi
+
+      - name: 删除标签
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          TAGS: ${{ github.event.inputs.tags }}
+        run: |
+          set -uo pipefail
+          repo="https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+
+          # Docker Hub 的删标签接口要的是登录换来的 JWT，不是 PAT 本身
+          JWT=$(curl -s -X POST https://hub.docker.com/v2/users/login \
+                  -H 'Content-Type: application/json' \
+                  -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
+                | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          if [ -z "${JWT}" ]; then
+            echo "::error::Docker Hub 登录失败，检查 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN"
+            exit 1
+          fi
+
+          echo "## 删除前" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          curl -s -H "Authorization: JWT ${JWT}" "${repo}/tags/?page_size=100" \
+            | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | sort -V >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          failed=0
+          for tag in $(printf '%s' "${TAGS}" | tr ',' ' '); do
+            [ -z "${tag}" ] && continue
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+                     -H "Authorization: JWT ${JWT}" "${repo}/tags/${tag}/")
+            case "${code}" in
+              200|202|204) echo "已删除 ${tag}" ;;
+              404)         echo "跳过 ${tag}（不存在）" ;;
+              *)           echo "::warning::删除 ${tag} 失败，HTTP ${code}"; failed=1 ;;
+            esac
+          done
+
+          echo "## 删除后" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          curl -s -H "Authorization: JWT ${JWT}" "${repo}/tags/?page_size=100" \
+            | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | sort -V >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          # 提醒：这里是「操作有失败」才退出非 0，让日志在 Actions 里标红提醒
+          exit ${failed}
