@@ -19,18 +19,36 @@ import (
 
 var validScriptKey = regexp.MustCompile(`^[\p{L}\p{N}_+./-]+\.(?:js|py)$`)
 
+// 网关给账号建的托管任务都用这个前缀命名，用来和用户自己建的任务区分开。
+const managedTaskPrefix = "[YYB:"
+
+// 给账号新建任务时用的默认调度。脚本在青龙里已有同名全局任务时优先沿用它的，
+// 所以这个值只在「这个脚本从来没有过定时任务」时才会用到。
+const defaultAccountTaskSchedule = "0 9 * * *"
+
 type scriptSource struct {
-	Key      string
-	Name     string
-	Schedule string
-	TaskRoot string
-	Cron     qingLongCron
+	Key      string // 脚本相对路径，如 code脚本/绿鼻子.js；也是 account_script_jobs.script_key
+	Name     string // 文件名，如 绿鼻子.js
+	Dir      string // 所在目录；脚本直接放在脚本根目录时为空
+	Schedule string // 给账号建任务时用的调度
+	// 青龙里跑同一个脚本、且不是网关托管的任务。它和账号任务会各跑一遍，
+	// 页面上据此提示「重复执行」，但不阻止用户操作。
+	GlobalCron *qingLongCron
+}
+
+// 展示用脚本名：去掉 .js/.py 后缀，任务名和列表里都更好读。
+func (s scriptSource) displayName() string {
+	if ext := filepath.Ext(s.Name); ext != "" {
+		return strings.TrimSuffix(s.Name, ext)
+	}
+	return s.Name
 }
 
 type accountJobPublic struct {
 	ScriptKey        string `json:"script_key"`
 	Name             string `json:"name"`
 	Schedule         string `json:"schedule"`
+	Dir              string `json:"dir,omitempty"`
 	Provisioned      bool   `json:"provisioned"`
 	Enabled          bool   `json:"enabled"`
 	Running          bool   `json:"running"`
@@ -104,27 +122,34 @@ func (a *App) handleQingLongJobs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sources, cronsByID, err := a.scriptCatalog(r.Context())
+	catalog, err := a.scriptCatalog(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	sources, cronsByID := catalog.Sources, catalog.CronsByID
 	storedJobs, err := a.db.ListAccountScriptJobs(r.Context(), acc.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 库里存的 key 可能是旧写法的裸文件名（见 matchScriptKey），先归一到当前池子
 	jobsByKey := make(map[string]store.AccountScriptJob, len(storedJobs))
 	for _, job := range storedJobs {
+		if key, ok := matchScriptKey(sources, job.ScriptKey); ok {
+			jobsByKey[key] = job
+			continue
+		}
 		jobsByKey[job.ScriptKey] = job
 	}
 	out := make([]accountJobPublic, 0, len(sources))
 	for _, source := range sources {
 		item := accountJobPublic{
 			ScriptKey:        source.Key,
-			Name:             source.Name,
+			Name:             source.displayName(),
+			Dir:              source.Dir,
 			Schedule:         source.Schedule,
-			GlobalTaskActive: source.Cron.enabled(),
+			GlobalTaskActive: source.GlobalCron != nil && source.GlobalCron.enabled(),
 		}
 		if job, exists := jobsByKey[source.Key]; exists {
 			if cron, found := cronsByID[job.QLCronID]; found {
@@ -142,10 +167,35 @@ func (a *App) handleQingLongJobs(w http.ResponseWriter, r *http.Request) {
 		"account": acc.Public(),
 		"jobs":    out,
 		"count":   len(out),
-		// 青龙实际返回的定时任务条数（含被忽略的）。列表为空时用它区分
-		// 「青龙里就没有任务」和「有任务但都不是脚本」，页面据此给不同提示。
-		"cron_total": len(cronsByID),
+		// 列表为空时页面要区分几种原因，所以把「数据源」「读到了多少条」都带上：
+		//   script_source=scripts 时 total 是脚本文件数（排除依赖/工具脚本后的可挂载数见 count）
+		//   script_source=crons   时说明面板没有脚本接口，退回从定时任务反推
+		"script_source": catalog.Source,
+		"scripts_total": catalog.Total,
+		"degraded_note": catalog.Degraded,
+		"cron_total":    len(cronsByID),
 	})
+}
+
+// 按页面传来的 script_key 找这个账号已配置的任务。
+//
+// 库里存的可能是旧写法的裸文件名（v7.1 及更早脚本池的 key 就是裸文件名），
+// 所以查不到时再用脚本池归一化一次；两次都找不到才算没配过。
+func (a *App) resolveAccountScriptJob(ctx context.Context, acc *store.WechatAccount, scriptKey string) (*store.AccountScriptJob, error) {
+	scriptKey = strings.TrimSpace(scriptKey)
+	job, err := a.db.GetAccountScriptJob(ctx, acc.ID, scriptKey)
+	if err == nil || !errors.Is(err, sql.ErrNoRows) {
+		return job, err
+	}
+	catalog, catalogErr := a.scriptCatalog(ctx)
+	if catalogErr != nil {
+		return nil, err
+	}
+	resolved, ok := matchScriptKey(catalog.Sources, scriptKey)
+	if !ok {
+		return nil, err
+	}
+	return a.db.GetAccountScriptJob(ctx, acc.ID, resolved)
 }
 
 func (a *App) handleQingLongJobEnable(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +213,7 @@ func (a *App) handleQingLongJobEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !body.Enabled {
-		job, err := a.db.GetAccountScriptJob(r.Context(), acc.ID, body.ScriptKey)
+		job, err := a.resolveAccountScriptJob(r.Context(), acc, body.ScriptKey)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "provisioned": false})
 			return
@@ -214,7 +264,7 @@ func (a *App) handleQingLongJobRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "account_id": acc.ID, "script_key": source.Key, "ql_cron_id": job.QLCronID, "name": source.Name, "submitted_at": time.Now().Unix()})
+	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "account_id": acc.ID, "script_key": source.Key, "ql_cron_id": job.QLCronID, "name": source.displayName(), "submitted_at": time.Now().Unix()})
 }
 
 func (a *App) handleQingLongJobLog(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +277,7 @@ func (a *App) handleQingLongJobLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scriptKey := strings.TrimSpace(r.URL.Query().Get("script_key"))
-	job, err := a.db.GetAccountScriptJob(r.Context(), acc.ID, scriptKey)
+	job, err := a.resolveAccountScriptJob(r.Context(), acc, scriptKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "该账号尚未创建此脚本任务")
 		return
@@ -301,10 +351,11 @@ func (a *App) handleQingLongRunLog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) accountRunHistory(ctx context.Context, accountID int64) ([]accountRunPublic, error) {
-	sources, cronsByID, err := a.scriptCatalog(ctx)
+	catalog, err := a.scriptCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
+	sources, cronsByID := catalog.Sources, catalog.CronsByID
 	jobs, err := a.db.ListAccountScriptJobs(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -343,8 +394,10 @@ func (a *App) accountRunHistory(ctx context.Context, accountID int64) ([]account
 		children := append([]qingLongLogEntry(nil), root.Children...)
 		sort.Slice(children, func(i, j int) bool { return children[i].CreateTime > children[j].CreateTime })
 		name := job.ScriptKey
-		if source, found := sourceByKey[job.ScriptKey]; found {
-			name = source.Name
+		if key, ok := matchScriptKey(sources, job.ScriptKey); ok {
+			if source, found := sourceByKey[key]; found {
+				name = source.displayName()
+			}
 		}
 		for index, entry := range children {
 			if entry.Type != "file" || !strings.HasSuffix(strings.ToLower(entry.Title), ".log") {
@@ -420,80 +473,191 @@ func (a *App) handleQingLongPush(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// 「可用脚本」池 = 青龙里**所有已建立的定时任务**。
+// 脚本池的来源：脚本目录里的文件（主源），或从定时任务反推（降级）。
+const (
+	scriptSourceFiles = "scripts"
+	scriptSourceCrons = "crons"
+)
+
+// scriptCatalogResult 是一次脚本池查询的全部结果。
+type scriptCatalogResult struct {
+	Sources   []scriptSource
+	CronsByID map[int64]qingLongCron
+	Total     int    // 数据源里的条目总数，供页面区分「列表为空」的不同原因
+	Source    string // scripts（脚本目录）| crons（定时任务，降级）
+	Degraded  string // 降级原因；主源可用时为空
+}
+
+// 「可用脚本」池 = 青龙脚本目录里的脚本文件。
 //
-// 早前的实现要求任务命令里的目录恰好命中 YYB_QINGLONG_REPO，否则整条任务被静默丢弃。
-// 那个配置项没有 UI、文档里也没提，默认值还只认两个上游目录，于是很常见的结局是：
-// 青龙明明连着、任务也有一堆，页面却恒显示「0 个脚本」。现在改为全量收录 ——
-// 只要命令能解析出 `<目录>/<脚本名>.js|py`，就进池子，不需要任何额外配置。
-func (a *App) scriptCatalog(ctx context.Context) ([]scriptSource, map[int64]qingLongCron, error) {
+// 用定时任务来推断「有哪些脚本」是不对的：定时任务回答的是「要跑什么」，
+// 脚本文件才是「能跑什么」。混在一起会同时踩两个坑 —— 用户自己建的任务被当成
+// 脚本，而网关给账号建的托管任务又得反过来排除；更糟的是同一个脚本在青龙里
+// 已有全局任务时，再挂一个账号任务就会真的跑两遍。
+//
+// 所以现在：池子读脚本目录，定时任务只用来回答「这个账号挂了这个脚本没有」。
+// 面板没有脚本接口时（老青龙、代代面板）才退回从定时任务反推，并在结果里标出来源，
+// 页面会说明当前列表是从哪来的。
+func (a *App) scriptCatalog(ctx context.Context) (scriptCatalogResult, error) {
 	if !a.qinglong.configured() {
-		return nil, nil, fmt.Errorf("面板 OpenAPI 未配置")
+		return scriptCatalogResult{}, fmt.Errorf("面板 OpenAPI 未配置")
 	}
 	crons, err := a.qinglong.listCrons(ctx, "")
 	if err != nil {
-		return nil, nil, err
+		return scriptCatalogResult{}, err
 	}
-	byKey := make(map[string]scriptSource)
-	byID := make(map[int64]qingLongCron, len(crons))
+	result := scriptCatalogResult{CronsByID: make(map[int64]qingLongCron, len(crons))}
 	for _, cron := range crons {
-		byID[cron.ID] = cron
-		key, root, ok := parseScriptKeyFromCron(cron)
+		result.CronsByID[cron.ID] = cron
+	}
+
+	scripts, scriptErr := a.qinglong.listScripts(ctx)
+	if scriptErr != nil {
+		result.Sources = sourcesFromCrons(crons)
+		result.Total = len(crons)
+		result.Source = scriptSourceCrons
+		result.Degraded = scriptErr.Error()
+		return result, nil
+	}
+	result.Sources = mergeScriptSources(scripts, crons)
+	result.Total = len(scripts)
+	result.Source = scriptSourceFiles
+	return result, nil
+}
+
+// 脚本目录里的文件 -> 脚本池。
+//
+// 同名的全局任务只用来补两样东西：调度（沿用用户已经调好的 cron）和「重复执行」提示；
+// 一个脚本能不能挂给账号，只取决于它是不是脚本文件。
+func mergeScriptSources(scripts []qingLongScript, crons []qingLongCron) []scriptSource {
+	globalByPath := make(map[string]qingLongCron, len(crons))
+	for _, cron := range crons {
+		if strings.HasPrefix(cron.Name, managedTaskPrefix) {
+			continue // 网关给账号建的托管任务，不是「全局任务」
+		}
+		path := scriptPathFromCommand(cron.Command)
+		if path == "" {
+			continue
+		}
+		if _, exists := globalByPath[path]; !exists {
+			globalByPath[path] = cron
+		}
+	}
+
+	seen := make(map[string]struct{}, len(scripts))
+	out := make([]scriptSource, 0, len(scripts))
+	for _, script := range scripts {
+		if !validScriptPath(script.Path) || isIgnoredScriptPath(script.Path) {
+			continue
+		}
+		if _, exists := seen[script.Path]; exists {
+			continue
+		}
+		seen[script.Path] = struct{}{}
+		source := scriptSource{
+			Key:      script.Path,
+			Name:     script.Name,
+			Dir:      script.Dir,
+			Schedule: defaultAccountTaskSchedule,
+		}
+		if cron, found := globalByPath[script.Path]; found {
+			cron := cron
+			source.GlobalCron = &cron
+			if schedule := cron.getSchedule(); schedule != "" {
+				source.Schedule = schedule
+			}
+		}
+		out = append(out, source)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Key) < strings.ToLower(out[j].Key) })
+	return out
+}
+
+// 降级路径：面板没有脚本接口时，从定时任务反推脚本（v7.1 及更早的行为）。
+func sourcesFromCrons(crons []qingLongCron) []scriptSource {
+	seen := make(map[string]struct{}, len(crons))
+	out := make([]scriptSource, 0, len(crons))
+	for _, cron := range crons {
+		path, ok := parseScriptPathFromCron(cron)
 		if !ok {
 			continue
 		}
-		// 同名脚本（不同目录）只保留先出现的那条：key 就是脚本在库里的标识，
-		// account_script_jobs 存的也是它，换成带目录的完整路径会让历史数据失效。
-		if _, exists := byKey[key]; exists {
+		if _, exists := seen[path]; exists {
 			continue
 		}
-		byKey[key] = scriptSource{Key: key, Name: cron.Name, Schedule: cron.getSchedule(), TaskRoot: root, Cron: cron}
+		seen[path] = struct{}{}
+		script := newQingLongScript(path)
+		out = append(out, scriptSource{
+			Key:      path,
+			Name:     script.Name,
+			Dir:      script.Dir,
+			Schedule: cron.getSchedule(),
+		})
 	}
-	out := make([]scriptSource, 0, len(byKey))
-	for _, source := range byKey {
-		out = append(out, source)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-	})
-	return out, byID, nil
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Key) < strings.ToLower(out[j].Key) })
+	return out
 }
 
-// 从定时任务里解析出脚本。
+// 把库里存的 script_key 归一到当前脚本池的写法。
 //
-// 返回的 key 是脚本文件名 —— 它同时是脚本在库里的标识（历史数据存的就是它），
-// 所以刻意不带目录；root 是它所在目录，可能为空（脚本直接放在脚本目录根部）。
+// v7.1 及更早，脚本池的 key 是裸文件名（`绿鼻子.js`），现在改成完整相对路径
+// （`code脚本/绿鼻子.js`）。历史数据仍按裸名存着，这里做一次兼容：精确匹配优先，
+// 其次按文件名唯一匹配；匹配不上说明这个脚本已经不在池子里了。
+func matchScriptKey(sources []scriptSource, raw string) (string, bool) {
+	raw = strings.Trim(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return "", false
+	}
+	fallback, matches := "", 0
+	for _, source := range sources {
+		if source.Key == raw {
+			return source.Key, true
+		}
+		if source.Name == raw {
+			fallback, matches = source.Key, matches+1
+		}
+	}
+	if matches == 1 {
+		return fallback, true
+	}
+	return "", false
+}
+
+// 从定时任务的命令里解析出脚本路径（相对脚本根目录），认不出来返回 false。
+//
+// 只在降级路径、「找同名全局任务」这两处用到。返回完整相对路径而不是裸文件名：
+// 不同目录下的同名脚本是两个脚本，混成一个会让账号任务挂错文件。
+//
 // 认得出这些常见写法：
 //
-//	task code脚本/绿鼻子.js                          -> code脚本                        / 绿鼻子.js
-//	task 525815266_YYB-Go-Enhanced/scripts/DTSH.py   -> 525815266_YYB-Go-Enhanced/scripts / DTSH.py
-//	node /ql/scripts/美的会员.js                      -> ""                              / 美的会员.js
-//	task 绿鼻子.js                                    -> ""                              / 绿鼻子.js
-func parseScriptKeyFromCron(cron qingLongCron) (key, root string, ok bool) {
+//	task code脚本/绿鼻子.js                          -> code脚本/绿鼻子.js
+//	task 525815266_YYB-Go-Enhanced/scripts/DTSH.py   -> 525815266_YYB-Go-Enhanced/scripts/DTSH.py
+//	node /ql/scripts/美的会员.js                      -> 美的会员.js
+//	task 绿鼻子.js                                    -> 绿鼻子.js
+func parseScriptPathFromCron(cron qingLongCron) (string, bool) {
 	// 网关自己给账号建的定时任务（名字带 [YYB:<账号ID>] 前缀）不算「可用脚本」
-	if strings.HasPrefix(cron.Name, "[YYB:") {
-		return "", "", false
+	if strings.HasPrefix(cron.Name, managedTaskPrefix) {
+		return "", false
 	}
 	path := scriptPathFromCommand(cron.Command)
-	if path == "" {
-		return "", "", false
+	if path == "" || !validScriptPath(path) || isIgnoredScriptPath(path) {
+		return "", false
 	}
-	idx := strings.LastIndex(path, "/")
-	if idx == -1 {
-		if !validScriptKey.MatchString(path) || isIgnoredScriptKey(path) {
-			return "", "", false
+	return path, true
+}
+
+// 脚本相对路径的合法性：字符集受限，且不能出现 . / .. 这类目录段。
+// 这个路径会被拼进 `task <path>` 交给青龙执行，所以必须挡住穿越写法。
+func validScriptPath(path string) bool {
+	if !validScriptKey.MatchString(path) {
+		return false
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
 		}
-		return path, "", true
 	}
-	root = strings.Trim(path[:idx], "/")
-	key = strings.TrimSpace(path[idx+1:])
-	if root != "" && !validQingLongTaskRoot(root) {
-		return "", "", false
-	}
-	if !validScriptKey.MatchString(key) || isIgnoredScriptKey(key) {
-		return "", "", false
-	}
-	return key, root, true
+	return true
 }
 
 // 把定时任务的命令还原成「相对脚本目录的脚本路径」，认不出来就返回空串。
@@ -533,41 +697,74 @@ func scriptPathFromCommand(command string) string {
 	return strings.Trim(cmd, "/")
 }
 
-func isIgnoredScriptKey(key string) bool {
-	key = strings.TrimSpace(key)
-	return key == "SendNotify.py" || strings.Contains(key, "eoos_checkin.py")
+// 不能被挂给账号单独跑的文件。
+//
+// 两类：青龙自带的通知模块，以及我们自己的共用工具/批量执行器 ——
+// 前者是给别人调用的库，后者一跑就会连带动所有账号，挂上去只会出错。
+var ignoredScriptNames = map[string]struct{}{
+	"SendNotify.py":   {},
+	"notify.js":       {},
+	"wechat_tools.js": {},
+	"wechat_tools.py": {},
+	"env.js":          {},
+	"!RunAll.py":      {},
+}
+
+// 依赖与版本控制目录里的 js 不是业务脚本（青龙一般已排除，这里再挡一道）。
+var ignoredScriptDirs = map[string]struct{}{
+	"node_modules": {}, ".git": {}, ".github": {}, ".vscode": {},
+	"backup": {}, "deps": {}, "__pycache__": {},
+}
+
+func isIgnoredScriptPath(path string) bool {
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	if path == "" {
+		return true
+	}
+	segments := strings.Split(path, "/")
+	name := segments[len(segments)-1]
+	for _, segment := range segments {
+		if _, ignored := ignoredScriptDirs[segment]; ignored {
+			return true
+		}
+	}
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	if _, ignored := ignoredScriptNames[name]; ignored {
+		return true
+	}
+	return strings.Contains(name, "SendNotify.py") || strings.Contains(name, "eoos_checkin.py")
 }
 
 func (a *App) ensureAccountJob(ctx context.Context, acc *store.WechatAccount, scriptKey string) (*store.AccountScriptJob, scriptSource, error) {
-	scriptKey = strings.TrimSpace(scriptKey)
-	sources, cronsByID, err := a.scriptCatalog(ctx)
+	catalog, err := a.scriptCatalog(ctx)
 	if err != nil {
 		return nil, scriptSource{}, err
 	}
-	var source scriptSource
-	found := false
-	for _, candidate := range sources {
-		if candidate.Key == scriptKey {
-			source, found = candidate, true
-			break
-		}
+	// 页面传的是脚本池里的 key；历史数据可能是裸文件名，先归一化
+	resolved, ok := matchScriptKey(catalog.Sources, scriptKey)
+	if !ok {
+		return nil, scriptSource{}, fmt.Errorf("不支持的脚本: %s", strings.TrimSpace(scriptKey))
 	}
+	source, found := findScriptSource(catalog.Sources, resolved)
 	if !found {
-		return nil, scriptSource{}, fmt.Errorf("不支持的脚本: %s", scriptKey)
+		return nil, scriptSource{}, fmt.Errorf("不支持的脚本: %s", strings.TrimSpace(scriptKey))
 	}
+	scriptKey = resolved
 	setting, err := a.db.AccountPushSettingOrDefault(ctx, acc.ID)
 	if err != nil {
 		return nil, scriptSource{}, err
 	}
-	command, taskBefore, err := a.accountTaskSpec(acc.ID, source.TaskRoot, scriptKey, setting)
+	command, taskBefore, err := a.accountTaskSpec(acc.ID, scriptKey, setting)
 	if err != nil {
 		return nil, scriptSource{}, err
 	}
-	name := managedTaskName(acc, source.Name)
+	name := managedTaskName(acc, source.displayName())
 	logName := managedLogName(acc.ID, scriptKey)
 	job, err := a.db.GetAccountScriptJob(ctx, acc.ID, scriptKey)
 	if err == nil {
-		if _, exists := cronsByID[job.QLCronID]; exists {
+		if _, exists := catalog.CronsByID[job.QLCronID]; exists {
 			if err := a.qinglong.updateCron(ctx, job.QLCronID, name, command, source.Schedule, taskBefore, logName); err != nil {
 				return nil, scriptSource{}, err
 			}
@@ -601,17 +798,14 @@ func managedLogName(accountID int64, scriptKey string) string {
 	return fmt.Sprintf("yyb_account_%d_%x", accountID, sum[:6])
 }
 
-func (a *App) accountTaskSpec(accountID int64, taskRoot, scriptKey string, setting *store.AccountPushSetting) (string, string, error) {
-	if !validScriptKey.MatchString(scriptKey) {
+func (a *App) accountTaskSpec(accountID int64, scriptPath string, setting *store.AccountPushSetting) (string, string, error) {
+	// scriptPath 就是脚本相对青龙脚本目录的完整路径（如 code脚本/绿鼻子.js），
+	// 青龙的 task 命令认这个写法，不用再拼目录前缀。
+	if !validScriptPath(scriptPath) {
 		return "", "", fmt.Errorf("脚本路径不合法")
 	}
 	if !regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`).MatchString(a.cfg.QingLongServer) {
 		return "", "", fmt.Errorf("YYB_QINGLONG_SERVER 格式不合法")
-	}
-	// taskRoot 为空表示脚本直接放在青龙的脚本目录根部（找到的定时任务就是这么写的），
-	// 这时命令就用裸脚本名，别再补目录前缀
-	if taskRoot != "" && !validQingLongTaskRoot(taskRoot) {
-		return "", "", fmt.Errorf("脚本目录不合法")
 	}
 	pushKey, pushPlusToken, pushPlusTopic, qywxKey := "''", "''", "''", "''"
 	switch setting.Channel {
@@ -625,34 +819,12 @@ func (a *App) accountTaskSpec(accountID int64, taskRoot, scriptKey string, setti
 	case "qywx":
 		qywxKey = envReference(setting.TokenEnvName)
 	}
-	command := "task " + scriptKey
-	if taskRoot != "" {
-		command = fmt.Sprintf("task %s/%s", taskRoot, scriptKey)
-	}
+	command := "task " + scriptPath
 	taskBefore := fmt.Sprintf(
 		"export YYB_SERVER='%s@%d'; export PUSH_KEY=%s; export PUSH_PLUS_TOKEN=%s; export PUSH_PLUS_USER=%s; export QYWX_KEY=%s",
 		a.cfg.QingLongServer, accountID, pushKey, pushPlusToken, pushPlusTopic, qywxKey,
 	)
 	return command, taskBefore, nil
-}
-
-// 脚本目录的合法字符：Unicode 字母/数字 + _ . -
-//
-// 目录来自定时任务命令本身（如 `task code脚本/绿鼻子.js`），会用去拼
-// `task <root>/<key>` 命令，所以必须排除空白与 shell 元字符；但要允许非 ASCII ——
-// 中文目录名很常见，而且脚本文件名本来就允许中文（见 validScriptKey 的 \p{L}）。
-var validQingLongTaskRootRe = regexp.MustCompile(`^[\p{L}\p{N}_.-]+(?:/[\p{L}\p{N}_.-]+)*$`)
-
-func validQingLongTaskRoot(root string) bool {
-	if !validQingLongTaskRootRe.MatchString(root) {
-		return false
-	}
-	for _, segment := range strings.Split(root, "/") {
-		if segment == "." || segment == ".." {
-			return false
-		}
-	}
-	return true
 }
 
 func envReference(name string) string {
@@ -750,32 +922,45 @@ func (a *App) savePushSetting(ctx context.Context, acc *store.WechatAccount, bod
 }
 
 func (a *App) refreshAccountJobCommands(ctx context.Context, acc *store.WechatAccount, setting *store.AccountPushSetting) error {
-	sources, cronsByID, err := a.scriptCatalog(ctx)
+	catalog, err := a.scriptCatalog(ctx)
 	if err != nil {
 		return err
-	}
-	sourceByKey := make(map[string]scriptSource, len(sources))
-	for _, source := range sources {
-		sourceByKey[source.Key] = source
 	}
 	jobs, err := a.db.ListAccountScriptJobs(ctx, acc.ID)
 	if err != nil {
 		return err
 	}
 	for _, job := range jobs {
-		source, sourceExists := sourceByKey[job.ScriptKey]
-		if _, cronExists := cronsByID[job.QLCronID]; !sourceExists || !cronExists {
+		if _, cronExists := catalog.CronsByID[job.QLCronID]; !cronExists {
 			continue
 		}
-		command, taskBefore, err := a.accountTaskSpec(acc.ID, source.TaskRoot, job.ScriptKey, setting)
+		// 库里可能是旧写法的裸文件名，先归一到当前池子的 key 再拼命令
+		key, ok := matchScriptKey(catalog.Sources, job.ScriptKey)
+		if !ok {
+			continue
+		}
+		source, found := findScriptSource(catalog.Sources, key)
+		if !found {
+			continue
+		}
+		command, taskBefore, err := a.accountTaskSpec(acc.ID, key, setting)
 		if err != nil {
 			return err
 		}
-		if err := a.qinglong.updateCron(ctx, job.QLCronID, managedTaskName(acc, source.Name), command, source.Schedule, taskBefore, managedLogName(acc.ID, job.ScriptKey)); err != nil {
+		if err := a.qinglong.updateCron(ctx, job.QLCronID, managedTaskName(acc, source.displayName()), command, source.Schedule, taskBefore, managedLogName(acc.ID, key)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func findScriptSource(sources []scriptSource, key string) (scriptSource, bool) {
+	for _, source := range sources {
+		if source.Key == key {
+			return source, true
+		}
+	}
+	return scriptSource{}, false
 }
 
 func (a *App) pushSettingPublic(ctx context.Context, setting *store.AccountPushSetting) (pushSettingPublic, error) {

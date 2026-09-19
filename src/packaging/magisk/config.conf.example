@@ -32,7 +32,6 @@ DAIDAI_URL=
 DAIDAI_APP_KEY=
 DAIDAI_APP_SECRET=
 YYB_QINGLONG_SERVER=
-YYB_QINGLONG_REPO=
 
 # Browser authentication defaults to a local SQLite database. The first
 # registered account becomes administrator when no initial password is set.

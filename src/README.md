@@ -216,12 +216,9 @@ QL_URL=http://qinglong:5700
 QL_CLIENT_ID=你的青龙应用 Client ID
 QL_CLIENT_SECRET=你的青龙应用 Client Secret
 YYB_QINGLONG_SERVER=yyb-go:8000
-YYB_QINGLONG_REPO=SuperNaiBA_YYB-GO-Script,525815266_YYB-Go-Enhanced/scripts
 ```
 
-`YYB_QINGLONG_REPO` 填青龙定时任务命令中 `task` 后面的仓库目录，多个目录用英文逗号分隔。通过本仓库订阅脚本时通常为 `525815266_YYB-Go-Enhanced/scripts`；通过上游脚本仓库订阅时为 `SuperNaiBA_YYB-GO-Script`。
-
-管理页发现上述仓库目录中的 `.js` 和 `.py` 任务。每个“账号 + 脚本”会创建一个独立青龙任务，新任务默认关闭；手动点击“运行一次”才会立即执行。账号变量通过青龙 `task_before` 注入，运行日志按“账号 + 脚本”写入独立目录，管理页只读取当前账号的目录。账号推送 Token 不写入任务命令和 YYB 数据库，接口也不会返回明文。
+管理页的脚本列表**直接读青龙脚本目录里的 `.js`/`.py` 文件**，不再需要配置仓库目录；通知模块（`SendNotify.py`）、工具库（`wechat_tools.*`、`notify.js`）和 `node_modules` 之类依赖目录里的文件会被自动排除。如果面板没有提供脚本文件接口（老青龙、代代面板），会自动退回从定时任务推断，并在页面上说明。每个“账号 + 脚本”会创建一个独立青龙任务，新任务默认关闭；手动点击“运行一次”才会立即执行。账号变量通过青龙 `task_before` 注入，运行日志按“账号 + 脚本”写入独立目录，管理页只读取当前账号的目录。账号推送 Token 不写入任务命令和 YYB 数据库，接口也不会返回明文。
 
 如果原订阅生成的全局任务仍在运行，管理页会显示重复运行提示。迁移到账号任务后，请在青龙中停用对应的旧全局任务。
 

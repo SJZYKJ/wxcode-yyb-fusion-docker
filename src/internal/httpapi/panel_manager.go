@@ -174,6 +174,14 @@ func (p *panelManager) setNamedEnvsEnabled(ctx context.Context, names []string, 
 	return p.getDriver().SetNamedEnvsEnabled(ctx, names, enabled)
 }
 
+func (p *panelManager) ListScripts(ctx context.Context) ([]qingLongScript, error) {
+	return p.listScripts(ctx)
+}
+
+func (p *panelManager) listScripts(ctx context.Context) ([]qingLongScript, error) {
+	return p.getDriver().ListScripts(ctx)
+}
+
 func (p *panelManager) ListCrons(ctx context.Context, search string) ([]qingLongCron, error) {
 	return p.listCrons(ctx, search)
 }

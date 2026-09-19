@@ -220,6 +220,104 @@ func (d *qingLongDriver) SetNamedEnvsEnabled(ctx context.Context, names []string
 	return d.SetEnvsEnabled(ctx, ids, enabled)
 }
 
+// 列出面板脚本目录里的脚本文件。
+//
+// 主路径是 OpenAPI 的 `/open/scripts/files`（返回目录树，目录节点带 children）。
+// 老版本的青龙没有这个端点，会返回 404 —— 上层据此降级为「从定时任务反推脚本」。
+func (d *qingLongDriver) ListScripts(ctx context.Context) ([]qingLongScript, error) {
+	var raw json.RawMessage
+	if err := d.request(ctx, http.MethodGet, "/open/scripts/files", nil, &raw); err != nil {
+		// 少数版本把脚本列表挂在 /open/scripts 上
+		if fallbackErr := d.request(ctx, http.MethodGet, "/open/scripts", nil, &raw); fallbackErr != nil {
+			return nil, err
+		}
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return []qingLongScript{}, nil
+	}
+
+	var nodes []qingLongScriptNode
+	if err := json.Unmarshal(raw, &nodes); err != nil {
+		// 兼容「扁平字符串数组」与「树被包在 data/files 里」两种返回体
+		var flat []string
+		if flatErr := json.Unmarshal(raw, &flat); flatErr == nil {
+			out := make([]qingLongScript, 0, len(flat))
+			for _, item := range flat {
+				if script := newQingLongScript(item); script.Path != "" {
+					out = append(out, script)
+				}
+			}
+			return out, nil
+		}
+		var page struct {
+			Data  []qingLongScriptNode `json:"data"`
+			Files []qingLongScriptNode `json:"files"`
+		}
+		if pageErr := json.Unmarshal(raw, &page); pageErr != nil {
+			return nil, err
+		}
+		if page.Data != nil {
+			nodes = page.Data
+		} else {
+			nodes = page.Files
+		}
+	}
+
+	out := make([]qingLongScript, 0, len(nodes))
+	collectScriptFiles(nodes, "", &out)
+	return out, nil
+}
+
+type qingLongScriptNode struct {
+	Title    string               `json:"title"`
+	Value    string               `json:"value"`
+	Key      string               `json:"key"`
+	Parent   string               `json:"parent"`
+	Children []qingLongScriptNode `json:"children"`
+}
+
+// 递归展开脚本目录树：带 children 的节点是目录，叶子节点才是脚本文件。
+func collectScriptFiles(nodes []qingLongScriptNode, parent string, out *[]qingLongScript) {
+	for _, node := range nodes {
+		if len(node.Children) > 0 {
+			collectScriptFiles(node.Children, scriptNodePath(node, parent), out)
+			continue
+		}
+		if path := scriptNodePath(node, parent); path != "" {
+			*out = append(*out, newQingLongScript(path))
+		}
+	}
+}
+
+// 从节点里还原出「相对脚本根目录的路径」。
+//
+// 各版本给的字段不一样：新版本直接给完整相对路径（value/key），
+// 老版本的子节点只有 title（文件名）+ parent（所在目录），得靠它们拼出来。
+func scriptNodePath(node qingLongScriptNode, parent string) string {
+	raw := strings.TrimSpace(node.Value)
+	if raw == "" {
+		raw = strings.TrimSpace(node.Key)
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(node.Title)
+	}
+	raw = strings.Trim(strings.ReplaceAll(raw, `\`, "/"), "/")
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "/") {
+		return raw
+	}
+	// 只有文件名时，节点自带的 parent 比继承下来的更准
+	if own := strings.Trim(strings.ReplaceAll(strings.TrimSpace(node.Parent), `\`, "/"), "/"); own != "" {
+		return own + "/" + raw
+	}
+	if parent != "" {
+		return parent + "/" + raw
+	}
+	return raw
+}
+
 func (d *qingLongDriver) ListCrons(ctx context.Context, search string) ([]qingLongCron, error) {
 	path := "/open/crons?" + url.Values{"searchValue": {search}}.Encode()
 	var raw json.RawMessage

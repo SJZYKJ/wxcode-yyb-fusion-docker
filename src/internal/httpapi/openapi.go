@@ -222,7 +222,7 @@ func newOpenAPISpec() map[string]any {
 					[]string{"qinglong"}, "获取账号脚本最近日志",
 					[]map[string]any{
 						queryStringParam("ref", "账号 ID、UIN 或 openid。", true),
-						queryStringParam("script_key", "订阅仓库内的受支持脚本路径。", true),
+						queryStringParam("script_key", "脚本相对青龙脚本目录的路径，如 code脚本/绿鼻子.js。", true),
 					}, nil,
 					defaulted(map[string]any{"200": jsonResponse("最近运行日志。", refSchema("JobLogResponse"))}),
 				),

@@ -18,6 +18,8 @@ type fakeQingLong struct {
 	mu              sync.Mutex
 	crons           []qingLongCron
 	envs            []qingLongEnv
+	scripts         []qingLongScriptNode
+	scriptsStatus   int // /open/scripts/files 的返回码；0 视为 200，可设 404 模拟没有该端点的老版本
 	nextCron        int64
 	nextEnv         int64
 	runIDs          []int64
@@ -41,10 +43,40 @@ func newFakeQingLong(t *testing.T) (*fakeQingLong, *httptest.Server) {
 			{ID: 2, Name: "EOOS", Command: "task SuperNaiBA_YYB-GO-Script/eoos/eoos_checkin.py", Schedule: "30 8 * * *", Status: 1, IsDisabled: intPointer(1)},
 			{ID: 3, Name: "DT生活", Command: "task 525815266_YYB-Go-Enhanced/scripts/DTSH.py", Schedule: "48 15 * * *", Status: 1, IsDisabled: intPointer(1)},
 		},
+		scripts: fakeScriptTree(),
 	}
 	server := httptest.NewServer(http.HandlerFunc(fake.serveHTTP))
 	t.Cleanup(server.Close)
 	return fake, server
+}
+
+// 模拟青龙 /open/scripts/files 返回的脚本目录树。
+//
+// 故意混进一批「不该被挂给账号」的文件：共用工具、青龙自带通知、依赖目录，
+// 以及非脚本文件、路径带 eoos 的检查脚本，用来验证过滤规则。
+func fakeScriptTree() []qingLongScriptNode {
+	return []qingLongScriptNode{
+		{Title: "code脚本", Value: "code脚本", Children: []qingLongScriptNode{
+			{Title: "绿鼻子.js", Value: "code脚本/绿鼻子.js", Parent: "code脚本"},
+			{Title: "匠心中华.js", Value: "code脚本/匠心中华.js", Parent: "code脚本"},
+			{Title: "notify.js", Value: "code脚本/notify.js", Parent: "code脚本"},
+			{Title: "wechat_tools.js", Value: "code脚本/wechat_tools.js", Parent: "code脚本"},
+			{Title: "!RunAll.py", Value: "code脚本/!RunAll.py", Parent: "code脚本"},
+			{Title: "README.md", Value: "code脚本/README.md", Parent: "code脚本"},
+		}},
+		{Title: "SuperNaiBA_YYB-GO-Script", Value: "SuperNaiBA_YYB-GO-Script", Children: []qingLongScriptNode{
+			{Title: "MDHY.js", Value: "SuperNaiBA_YYB-GO-Script/MDHY.js", Parent: "SuperNaiBA_YYB-GO-Script"},
+			{Title: "eoos", Value: "SuperNaiBA_YYB-GO-Script/eoos", Children: []qingLongScriptNode{
+				{Title: "eoos_checkin.py", Value: "SuperNaiBA_YYB-GO-Script/eoos/eoos_checkin.py", Parent: "SuperNaiBA_YYB-GO-Script/eoos"},
+			}},
+		}},
+		{Title: "DTSH.py", Value: "525815266_YYB-Go-Enhanced/scripts/DTSH.py", Parent: "525815266_YYB-Go-Enhanced/scripts"},
+		{Title: "美的会员副本.js", Value: "美的会员副本.js"},
+		{Title: "SendNotify.py", Value: "SendNotify.py"},
+		{Title: "node_modules", Value: "node_modules", Children: []qingLongScriptNode{
+			{Title: "index.js", Value: "node_modules/some-pkg/index.js", Parent: "node_modules/some-pkg"},
+		}},
+	}
 }
 
 func (f *fakeQingLong) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +93,13 @@ func (f *fakeQingLong) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.Method == http.MethodGet && (r.URL.Path == "/open/scripts/files" || r.URL.Path == "/open/scripts"):
+		if f.scriptsStatus != 0 && f.scriptsStatus != http.StatusOK {
+			w.WriteHeader(f.scriptsStatus)
+			write(nil)
+			return
+		}
+		write(f.scripts)
 	case r.Method == http.MethodGet && r.URL.Path == "/open/crons":
 		write(f.crons)
 	case r.Method == http.MethodPost && r.URL.Path == "/open/crons":
@@ -224,58 +263,83 @@ func TestEnhancedRepoScriptsKeepTheirSourcePath(t *testing.T) {
 	}
 }
 
-// 端到端：「全部脚本」= 青龙里所有已建立的定时任务，**不需要任何配置**。
+// 端到端：脚本池 = 青龙脚本目录里的脚本文件，而不是定时任务。
 //
-// 回归背景：此前列表要求任务命令里的目录恰好命中 YYB_QINGLONG_REPO，否则整条任务被
-// 静默丢弃。那个配置项没有 UI、文档里也没提、默认值还只认两个上游目录，于是
-// 「青龙已连接，但页面 0 个脚本」几乎必然发生（用户实际就是这么撞上的）。
-func TestQingLongJobsListEveryCronTask(t *testing.T) {
+// 回归背景：列表曾经从「全部定时任务」反推，于是同时踩两个坑 —— 用户自己建的
+// 任务被当成可用脚本，而网关给账号建的托管任务又得反过来排除；更糟的是同一个
+// 脚本在青龙里已有全局任务时，再挂一个账号任务会真的跑两遍。
+// 「能跑什么」应该看脚本文件，定时任务只回答「这个账号挂了这个脚本没有」。
+func TestScriptCatalogUsesScriptFiles(t *testing.T) {
 	fake, server := newFakeQingLong(t)
-	fake.mu.Lock()
-	fake.crons = append(fake.crons,
-		qingLongCron{ID: 7, Name: "绿鼻子", Command: "task code脚本/绿鼻子.js", Schedule: "0 9 * * *", Status: 1, IsDisabled: intPointer(1)},
-		qingLongCron{ID: 8, Name: "美的会员副本", Command: "task 美的会员副本.js", Schedule: "5 9 * * *", Status: 1, IsDisabled: intPointer(1)},
-		qingLongCron{ID: 9, Name: "[YYB:1] 主用 · 绿鼻子", Command: "task code脚本/管理任务.js", Schedule: "0 9 * * *", Status: 1, IsDisabled: intPointer(1)},
-	)
-	fake.mu.Unlock()
-
 	_, handler, ref := newRunsTestApp(t, server.URL)
 
 	list := apiRequest(t, handler, http.MethodGet, "/api/qinglong/jobs?ref="+url.QueryEscape(ref), nil)
 	if list.Code != http.StatusOK {
 		t.Fatalf("jobs response = %d %s", list.Code, list.Body.String())
 	}
-	body := list.Body.String()
-	// 上游目录、中文目录、无目录三种任务都要在列表里
-	for _, want := range []string{"绿鼻子.js", "DTSH.py", "MDHY.js", "美的会员副本.js"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("定时任务 %s 没有被列出: %s", want, body)
+	payload := decodeJobsPayload(t, list.Body.Bytes())
+
+	if payload.ScriptSource != "scripts" {
+		t.Fatalf("脚本池应来自脚本文件, got %q (degraded=%q)", payload.ScriptSource, payload.Degraded)
+	}
+	// 脚本目录里一共 12 个文件，其中能挂给账号跑的只有 5 个
+	if payload.ScriptsTotal != 12 {
+		t.Fatalf("scripts_total = %d, want 12", payload.ScriptsTotal)
+	}
+	want := map[string]bool{
+		"code脚本/绿鼻子.js":                             false,
+		"code脚本/匠心中华.js":                            false,
+		"SuperNaiBA_YYB-GO-Script/MDHY.js":          false,
+		"525815266_YYB-Go-Enhanced/scripts/DTSH.py": false,
+		"美的会员副本.js":                                 false,
+	}
+	active := make(map[string]bool, len(payload.Jobs))
+	for _, job := range payload.Jobs {
+		if _, ok := want[job.ScriptKey]; !ok {
+			t.Fatalf("不该出现在脚本池里: %q", job.ScriptKey)
+		}
+		want[job.ScriptKey] = true
+		active[job.ScriptKey] = job.GlobalTaskActive
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Fatalf("脚本 %s 没有被列出", key)
 		}
 	}
-	for _, unwanted := range []string{"eoos_checkin.py", "管理任务.js"} {
-		if strings.Contains(body, unwanted) {
-			t.Fatalf("%s 不该出现: %s", unwanted, body)
+	// fixture 里那条全局任务处于停用状态，所以还不算「会重复跑」
+	if active["code脚本/绿鼻子.js"] || active["SuperNaiBA_YYB-GO-Script/MDHY.js"] {
+		t.Fatalf("停用的全局任务不该被标注为会重复执行: %v", active)
+	}
+	// 启用之后就要标出来：再挂账号任务就是跑两遍
+	fake.mu.Lock()
+	fake.crons[0].IsDisabled = intPointer(0)
+	fake.mu.Unlock()
+	again := decodeJobsPayload(t, apiRequest(t, handler, http.MethodGet, "/api/qinglong/jobs?ref="+url.QueryEscape(ref), nil).Body.Bytes())
+	flagged := false
+	for _, job := range again.Jobs {
+		if job.ScriptKey == "SuperNaiBA_YYB-GO-Script/MDHY.js" {
+			flagged = job.GlobalTaskActive
 		}
 	}
-	// cron_total 是青龙返回的原始任务条数（6 条），页面靠它区分「没有任务」与「有任务但认不出脚本」
-	if !strings.Contains(body, `"cron_total":6`) {
-		t.Fatalf("cron_total 应为 6: %s", body)
+	if !flagged {
+		t.Fatal("全局任务启用后应被标注 global_task_active，否则用户看不出会跑两遍")
 	}
 
-	// 中文目录里的脚本：建出来的命令必须原样保留中文路径
+	// 勾选脚本时命令必须保留完整相对路径（含中文目录）
 	enable := apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
-		"ref": ref, "script_key": "绿鼻子.js", "enabled": true,
+		"ref": ref, "script_key": "code脚本/绿鼻子.js", "enabled": true,
 	})
 	if enable.Code != http.StatusOK {
 		t.Fatalf("enable response = %d %s", enable.Code, enable.Body.String())
 	}
 	fake.mu.Lock()
 	if got := fake.commands[len(fake.commands)-1]; got != "task code脚本/绿鼻子.js" {
+		fake.mu.Unlock()
 		t.Fatalf("managed command = %q", got)
 	}
 	fake.mu.Unlock()
 
-	// 没有目录的任务：命令就用裸脚本名，不补任何前缀
+	// 脚本在根目录时命令就是裸脚本名，不补任何前缀
 	enable = apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
 		"ref": ref, "script_key": "美的会员副本.js", "enabled": true,
 	})
@@ -289,40 +353,92 @@ func TestQingLongJobsListEveryCronTask(t *testing.T) {
 	}
 }
 
-func TestParseScriptKeyFromCron(t *testing.T) {
+// 面板没有脚本文件接口时（老青龙、代代面板），退回从定时任务反推，并在响应里说明来源。
+func TestScriptCatalogFallsBackToCronTasks(t *testing.T) {
+	fake, server := newFakeQingLong(t)
+	fake.mu.Lock()
+	fake.scriptsStatus = http.StatusNotFound
+	fake.mu.Unlock()
+
+	_, handler, ref := newRunsTestApp(t, server.URL)
+	list := apiRequest(t, handler, http.MethodGet, "/api/qinglong/jobs?ref="+url.QueryEscape(ref), nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("jobs response = %d %s", list.Code, list.Body.String())
+	}
+	payload := decodeJobsPayload(t, list.Body.Bytes())
+	if payload.ScriptSource != "crons" {
+		t.Fatalf("script_source = %q, want crons", payload.ScriptSource)
+	}
+	if payload.Degraded == "" {
+		t.Fatal("降级时应说明原因，页面才能提示用户")
+	}
+	keys := make(map[string]bool, len(payload.Jobs))
+	for _, job := range payload.Jobs {
+		keys[job.ScriptKey] = true
+	}
+	// 三个任务里能解析出脚本的只有两个；eoos_checkin.py 与网关自建任务都不算
+	if len(keys) != 2 || !keys["SuperNaiBA_YYB-GO-Script/MDHY.js"] || !keys["525815266_YYB-Go-Enhanced/scripts/DTSH.py"] {
+		t.Fatalf("降级后应列出定时任务里的 2 个脚本, got %v", keys)
+	}
+}
+
+// 库里存的历史 script_key 是裸文件名（v7.1 及更早的脚本池 key），要能归一到新写法。
+func TestMatchScriptKeyAcceptsLegacyBareName(t *testing.T) {
+	sources := []scriptSource{
+		{Key: "code脚本/绿鼻子.js", Name: "绿鼻子.js"},
+		{Key: "其他/绿鼻子.js", Name: "绿鼻子.js"},
+		{Key: "美的会员副本.js", Name: "美的会员副本.js"},
+	}
+	if key, ok := matchScriptKey(sources, "code脚本/绿鼻子.js"); !ok || key != "code脚本/绿鼻子.js" {
+		t.Fatalf("精确匹配失败: ok=%v key=%q", ok, key)
+	}
+	if _, ok := matchScriptKey(sources, "/code脚本/绿鼻子.js"); !ok {
+		t.Fatal("带前导斜杠的 key 应被容忍")
+	}
+	// 同名脚本不止一个时不能猜，否则会给账号挂错文件
+	if key, ok := matchScriptKey(sources, "绿鼻子.js"); ok {
+		t.Fatalf("同名脚本不唯一时不该回退匹配: %q", key)
+	}
+	if key, ok := matchScriptKey(sources, "美的会员副本.js"); !ok || key != "美的会员副本.js" {
+		t.Fatalf("唯一同名回退失败: ok=%v key=%q", ok, key)
+	}
+	if _, ok := matchScriptKey(sources, "不存在的脚本.js"); ok {
+		t.Fatal("池子里没有的脚本不该匹配成功")
+	}
+}
+
+func TestParseScriptPathFromCron(t *testing.T) {
 	cases := []struct {
 		desc  string
 		cron  qingLongCron
-		key   string
-		root  string
+		path  string
 		valid bool
 	}{
-		{"中文目录", qingLongCron{Name: "绿鼻子", Command: "task code脚本/绿鼻子.js"}, "绿鼻子.js", "code脚本", true},
-		{"多级目录", qingLongCron{Name: "DT生活", Command: "task 525815266_YYB-Go-Enhanced/scripts/DTSH.py"}, "DTSH.py", "525815266_YYB-Go-Enhanced/scripts", true},
-		{"无目录", qingLongCron{Name: "美的", Command: "task 美的会员.js"}, "美的会员.js", "", true},
-		{"node 绝对路径", qingLongCron{Name: "美的", Command: "node /ql/scripts/美的会员.js"}, "美的会员.js", "", true},
-		{"python 绝对路径带中文目录", qingLongCron{Name: "绿鼻子", Command: "python3 /ql/scripts/code脚本/绿鼻子.py"}, "绿鼻子.py", "code脚本", true},
-		{"追加参数", qingLongCron{Name: "美的", Command: "task 美的会员.js now"}, "美的会员.js", "", true},
-		{"带引号", qingLongCron{Name: "美的", Command: `task "code脚本/绿鼻子.js"`}, "绿鼻子.js", "code脚本", true},
-		{"带重定向", qingLongCron{Name: "美的", Command: "node /ql/scripts/美的会员.js >/dev/null 2>&1"}, "美的会员.js", "", true},
-		{"反斜杠分隔", qingLongCron{Name: "美的", Command: `task code脚本\美的会员.js`}, "美的会员.js", "code脚本", true},
-		{"网关自建的账号任务", qingLongCron{Name: "[YYB:1] 主用 · 绿鼻子", Command: "task code脚本/绿鼻子.js"}, "", "", false},
-		{"被忽略的推送脚本", qingLongCron{Name: "推送", Command: "task SendNotify.py"}, "", "", false},
-		{"非脚本命令", qingLongCron{Name: "拉库", Command: "ql repo https://github.com/x/y.git"}, "", "", false},
-		{"空命令", qingLongCron{Name: "空", Command: ""}, "", "", false},
-		{"路径穿越", qingLongCron{Name: "坏", Command: "task ../evil/x.js"}, "", "", false},
-		{"shell 元字符", qingLongCron{Name: "坏", Command: "task code脚本;rm -rf /x.js"}, "", "", false},
+		{"中文目录", qingLongCron{Name: "绿鼻子", Command: "task code脚本/绿鼻子.js"}, "code脚本/绿鼻子.js", true},
+		{"多级目录", qingLongCron{Name: "DT生活", Command: "task 525815266_YYB-Go-Enhanced/scripts/DTSH.py"}, "525815266_YYB-Go-Enhanced/scripts/DTSH.py", true},
+		{"无目录", qingLongCron{Name: "美的", Command: "task 美的会员.js"}, "美的会员.js", true},
+		{"node 绝对路径", qingLongCron{Name: "美的", Command: "node /ql/scripts/美的会员.js"}, "美的会员.js", true},
+		{"python 绝对路径带中文目录", qingLongCron{Name: "绿鼻子", Command: "python3 /ql/scripts/code脚本/绿鼻子.py"}, "code脚本/绿鼻子.py", true},
+		{"追加参数", qingLongCron{Name: "美的", Command: "task 美的会员.js now"}, "美的会员.js", true},
+		{"带引号", qingLongCron{Name: "美的", Command: `task "code脚本/绿鼻子.js"`}, "code脚本/绿鼻子.js", true},
+		{"带重定向", qingLongCron{Name: "美的", Command: "node /ql/scripts/美的会员.js >/dev/null 2>&1"}, "美的会员.js", true},
+		{"反斜杠分隔", qingLongCron{Name: "美的", Command: `task code脚本\美的会员.js`}, "code脚本/美的会员.js", true},
+		{"网关自建的账号任务", qingLongCron{Name: "[YYB:1] 主用 · 绿鼻子", Command: "task code脚本/绿鼻子.js"}, "", false},
+		{"被忽略的推送脚本", qingLongCron{Name: "推送", Command: "task SendNotify.py"}, "", false},
+		{"共用工具", qingLongCron{Name: "工具", Command: "task code脚本/wechat_tools.js"}, "", false},
+		{"依赖目录", qingLongCron{Name: "依赖", Command: "task node_modules/pkg/index.js"}, "", false},
+		{"非脚本命令", qingLongCron{Name: "拉库", Command: "ql repo https://github.com/x/y.git"}, "", false},
+		{"空命令", qingLongCron{Name: "空", Command: ""}, "", false},
+		{"路径穿越", qingLongCron{Name: "坏", Command: "task ../evil/x.js"}, "", false},
+		{"shell 元字符", qingLongCron{Name: "坏", Command: "task code脚本;rm -rf /x.js"}, "", false},
 	}
 	for _, tc := range cases {
-		key, root, ok := parseScriptKeyFromCron(tc.cron)
+		path, ok := parseScriptPathFromCron(tc.cron)
 		if ok != tc.valid {
-			t.Fatalf("%s: ok = %v, want %v (key=%q root=%q)", tc.desc, ok, tc.valid, key, root)
+			t.Fatalf("%s: ok = %v, want %v (path=%q)", tc.desc, ok, tc.valid, path)
 		}
-		if !tc.valid {
-			continue
-		}
-		if key != tc.key || root != tc.root {
-			t.Fatalf("%s: got key=%q root=%q, want key=%q root=%q", tc.desc, key, root, tc.key, tc.root)
+		if ok && path != tc.path {
+			t.Fatalf("%s: got path=%q, want %q", tc.desc, path, tc.path)
 		}
 	}
 }
@@ -340,6 +456,35 @@ func apiRequest(t *testing.T, handler http.Handler, method, path string, body an
 	return recorder
 }
 
+type jobsPayload struct {
+	Count        int    `json:"count"`
+	ScriptSource string `json:"script_source"`
+	ScriptsTotal int    `json:"scripts_total"`
+	CronTotal    int    `json:"cron_total"`
+	Degraded     string `json:"degraded_note"`
+	Jobs         []struct {
+		ScriptKey        string `json:"script_key"`
+		Name             string `json:"name"`
+		Dir              string `json:"dir"`
+		Schedule         string `json:"schedule"`
+		Provisioned      bool   `json:"provisioned"`
+		Enabled          bool   `json:"enabled"`
+		GlobalTaskActive bool   `json:"global_task_active"`
+	} `json:"jobs"`
+}
+
+func decodeJobsPayload(t *testing.T, raw []byte) jobsPayload {
+	t.Helper()
+	// 接口响应统一带 {code,msg,data} 外壳
+	var envelope struct {
+		Data jobsPayload `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("解析 jobs 响应失败: %v (%s)", err, raw)
+	}
+	return envelope.Data
+}
+
 func TestAccountJobsAreIsolatedDisabledByDefaultAndRunExplicitly(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	_, handler, ref := newRunsTestApp(t, server.URL)
@@ -353,7 +498,7 @@ func TestAccountJobsAreIsolatedDisabledByDefaultAndRunExplicitly(t *testing.T) {
 	}
 
 	enable := apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
-		"ref": ref, "script_key": "MDHY.js", "enabled": true,
+		"ref": ref, "script_key": "SuperNaiBA_YYB-GO-Script/MDHY.js", "enabled": true,
 	})
 	if enable.Code != http.StatusOK {
 		t.Fatalf("enable response = %d %s", enable.Code, enable.Body.String())
@@ -376,7 +521,7 @@ func TestAccountJobsAreIsolatedDisabledByDefaultAndRunExplicitly(t *testing.T) {
 	}
 
 	run := apiRequest(t, handler, http.MethodPost, "/api/qinglong/jobs/run", map[string]any{
-		"ref": ref, "script_key": "MDHY.js",
+		"ref": ref, "script_key": "SuperNaiBA_YYB-GO-Script/MDHY.js",
 	})
 	if run.Code != http.StatusAccepted {
 		t.Fatalf("run response = %d %s", run.Code, run.Body.String())
@@ -392,7 +537,7 @@ func TestAccountJobUsesCurrentQingLongStateFields(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	_, handler, ref := newRunsTestApp(t, server.URL)
 	_ = apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
-		"ref": ref, "script_key": "MDHY.js", "enabled": true,
+		"ref": ref, "script_key": "SuperNaiBA_YYB-GO-Script/MDHY.js", "enabled": true,
 	})
 
 	fake.mu.Lock()
@@ -410,7 +555,8 @@ func TestAccountJobUsesCurrentQingLongStateFields(t *testing.T) {
 	if idle.Code != http.StatusOK || !strings.Contains(idle.Body.String(), `"enabled":true`) || !strings.Contains(idle.Body.String(), `"running":false`) {
 		t.Fatalf("idle current QingLong job response = %d %s", idle.Code, idle.Body.String())
 	}
-	if !strings.Contains(idle.Body.String(), `"name":"美的会员"`) || strings.Contains(idle.Body.String(), `"name":"[YYB:`) {
+	// 列表里的条目应该是脚本本身（名字取自脚本文件），而不是青龙里那条全局任务
+	if !strings.Contains(idle.Body.String(), `"name":"MDHY"`) || strings.Contains(idle.Body.String(), `"name":"[YYB:`) {
 		t.Fatalf("managed account task replaced the source script: %s", idle.Body.String())
 	}
 	if !strings.Contains(idle.Body.String(), `"global_task_active":true`) {
@@ -435,15 +581,15 @@ func TestAccountRunHistoryAndLogAreScopedToAccount(t *testing.T) {
 	_, server := newFakeQingLong(t)
 	app, handler, ref := newRunsTestApp(t, server.URL)
 	run := apiRequest(t, handler, http.MethodPost, "/api/qinglong/jobs/run", map[string]any{
-		"ref": ref, "script_key": "MDHY.js",
+		"ref": ref, "script_key": "SuperNaiBA_YYB-GO-Script/MDHY.js",
 	})
 	if run.Code != http.StatusAccepted || !strings.Contains(run.Body.String(), `"account_id":1`) {
 		t.Fatalf("run response = %d %s", run.Code, run.Body.String())
 	}
 
-	firstLogKey := managedLogName(1, "MDHY.js") + "/2026-07-31-14-30-00-000.log"
+	firstLogKey := managedLogName(1, "SuperNaiBA_YYB-GO-Script/MDHY.js") + "/2026-07-31-14-30-00-000.log"
 	history := apiRequest(t, handler, http.MethodGet, "/api/qinglong/runs?ref="+url.QueryEscape(ref), nil)
-	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"script_key":"MDHY.js"`) || !strings.Contains(history.Body.String(), `"log_key":"`+firstLogKey+`"`) {
+	if history.Code != http.StatusOK || !strings.Contains(history.Body.String(), `"script_key":"SuperNaiBA_YYB-GO-Script/MDHY.js"`) || !strings.Contains(history.Body.String(), `"log_key":"`+firstLogKey+`"`) {
 		t.Fatalf("account history response = %d %s", history.Code, history.Body.String())
 	}
 
@@ -459,11 +605,11 @@ func TestAccountRunHistoryAndLogAreScopedToAccount(t *testing.T) {
 		t.Fatalf("seed second account: %v", err)
 	}
 	secondRef := fmt.Sprintf("%d", second.ID)
-	secondRun := apiRequest(t, handler, http.MethodPost, "/api/qinglong/jobs/run", map[string]any{"ref": secondRef, "script_key": "MDHY.js"})
+	secondRun := apiRequest(t, handler, http.MethodPost, "/api/qinglong/jobs/run", map[string]any{"ref": secondRef, "script_key": "SuperNaiBA_YYB-GO-Script/MDHY.js"})
 	if secondRun.Code != http.StatusAccepted {
 		t.Fatalf("second account run response = %d %s", secondRun.Code, secondRun.Body.String())
 	}
-	secondLogKey := managedLogName(second.ID, "MDHY.js") + "/2026-07-31-14-30-00-000.log"
+	secondLogKey := managedLogName(second.ID, "SuperNaiBA_YYB-GO-Script/MDHY.js") + "/2026-07-31-14-30-00-000.log"
 	secondHistory := apiRequest(t, handler, http.MethodGet, "/api/qinglong/runs?ref="+url.QueryEscape(secondRef), nil)
 	if secondHistory.Code != http.StatusOK || !strings.Contains(secondHistory.Body.String(), secondLogKey) || strings.Contains(secondHistory.Body.String(), firstLogKey) {
 		t.Fatalf("second account history was not isolated = %d %s", secondHistory.Code, secondHistory.Body.String())
@@ -479,7 +625,7 @@ func TestPushSecretStaysInQingLongEnvironment(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	_, handler, ref := newRunsTestApp(t, server.URL)
 	_ = apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
-		"ref": ref, "script_key": "MDHY.js", "enabled": true,
+		"ref": ref, "script_key": "SuperNaiBA_YYB-GO-Script/MDHY.js", "enabled": true,
 	})
 	secret := "SCT_FAKE_SECRET_VALUE"
 	save := apiRequest(t, handler, http.MethodPut, "/api/qinglong/push", map[string]any{

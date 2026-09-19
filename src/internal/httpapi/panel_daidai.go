@@ -248,6 +248,11 @@ func (d *daidaiDriver) SetNamedEnvsEnabled(ctx context.Context, names []string, 
 	return d.SetEnvsEnabled(ctx, ids, enabled)
 }
 
+// 代代面板没有「列脚本文件」的接口，显式返回不支持，让上层降级为从定时任务反推。
+func (d *daidaiDriver) ListScripts(ctx context.Context) ([]qingLongScript, error) {
+	return nil, errPanelScriptsUnsupported
+}
+
 func (d *daidaiDriver) ListCrons(ctx context.Context, search string) ([]qingLongCron, error) {
 	path := "/api/v1/tasks?" + url.Values{"keyword": {search}, "all": {"1"}}.Encode()
 	var raw json.RawMessage
