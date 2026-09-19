@@ -5,92 +5,94 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>登录 - YYB Go</title>
   <link rel="stylesheet" href="/static/css/auth.css">
+  <style>
+    /* 居中卡片式登录页（v13 重构版） */
+    body.auth-split { background: radial-gradient(1200px 800px at 15% -10%, #eef0ff 0%, transparent 55%), radial-gradient(1000px 700px at 110% 110%, #eaf4fb 0%, transparent 50%), #f5f5fb; }
+    .auth-card-layout { min-height: 100vh; display: grid; place-items: center; padding: 40px 20px; }
+    .auth-card { width: min(440px, 100%); background: #fff; border: 1px solid #e6e8f4; border-radius: 20px; box-shadow: 0 24px 60px rgba(60, 60, 140, .12), 0 2px 8px rgba(60, 60, 140, .05); overflow: hidden; }
+    .auth-card-brand { display: flex; align-items: center; gap: 12px; padding: 26px 30px 0; }
+    .auth-card-brand .brand-mark { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: linear-gradient(135deg, #6366e8, #4c3fd0); color: #fff; font-weight: 800; font-size: 19px; box-shadow: 0 6px 16px rgba(84, 87, 214, .35); }
+    .auth-card-brand .brand-name { font-size: 17px; font-weight: 750; color: #23233c; }
+    .auth-card-brand .brand-meta { font-size: 12px; color: #8a8da8; margin-top: 2px; }
+    .auth-card-body { padding: 24px 30px 30px; }
+    .auth-card-body h1 { margin: 0 0 6px; font-size: 24px; font-weight: 760; color: #23233c; letter-spacing: 0; }
+    .auth-card-body .lead { margin: 0 0 24px; color: #6b6d85; font-size: 14px; }
+    .auth-card .field { margin-bottom: 18px; }
+    .auth-card .input { height: 46px; border-radius: 12px; }
+    .auth-card .btn.primary { height: 46px; border-radius: 12px; font-size: 15px; }
+    .auth-card-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; padding-top: 18px; border-top: 1px solid #eef0f7; }
+    .auth-card-foot a { color: #5457d6; font-weight: 650; text-decoration: none; }
+    .auth-card-foot a:hover { text-decoration: underline; }
+    .auth-card .auth-meta { margin-top: 0; border-top: 0; padding-top: 0; }
+    .auth-feature-strip { display: none; }
+    @media (min-width: 900px) {
+      .auth-card-layout { grid-template-columns: 1fr 1fr; gap: 48px; max-width: 960px; margin: 0 auto; }
+      .auth-card { grid-column: 1; }
+      .auth-feature-strip { display: block; grid-column: 2; color: #23233c; }
+      .auth-feature-strip h2 { font-size: 28px; font-weight: 760; line-height: 1.3; margin: 0 0 14px; }
+      .auth-feature-strip > p { color: #6b6d85; line-height: 1.7; margin: 0 0 26px; }
+      .feature-grid { display: grid; gap: 14px; }
+      .feature-item { display: flex; gap: 12px; align-items: flex-start; }
+      .feature-item .fi-icon { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 10px; display: grid; place-items: center; background: #eef0ff; color: #5457d6; font-weight: 700; }
+      .feature-item strong { display: block; font-size: 14px; margin-bottom: 2px; }
+      .feature-item p { margin: 0; font-size: 13px; color: #6b6d85; line-height: 1.5; }
+      /* 版本更新（浅色主题适配） */
+      .card-changelog { margin-top: 30px; padding-top: 22px; border-top: 1px solid #e3e5f2; }
+      .changelog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+      .changelog-head h3 { font-size: 14px; margin: 0; color: #23233c; letter-spacing: .4px; }
+      .changelog-now { font-size: 12px; color: #8a8da8; white-space: nowrap; }
+      .changelog-now b { color: #23233c; font-weight: 700; }
+      .changelog-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+      .changelog-list li { display: flex; align-items: flex-start; gap: 11px; }
+      .changelog-tag { flex: 0 0 auto; min-width: 34px; margin-top: 2px; padding: 2px 7px; border-radius: 999px; background: #eef0ff; color: #5457d6; font-size: 11px; font-weight: 700; text-align: center; letter-spacing: .3px; }
+      .changelog-body b { display: block; font-size: 13px; color: #23233c; margin-bottom: 3px; }
+      .changelog-body p { margin: 0; font-size: 12.5px; line-height: 1.65; color: #6b6d85; }
+    }
+  </style>
 </head>
-<body>
-<main class="auth-layout">
-  <section class="auth-panel"><div class="auth-main">
-    <div class="brand"><span class="brand-mark">Y</span><div><div class="brand-name">YYB Go Enhanced</div><div class="brand-meta">微信协议与自动化控制台</div></div></div>
-    <h1>登录控制台</h1>
-    <p class="lead">使用管理员或已注册用户账号继续。</p>
-    <form id="form">
-      <div class="field"><label for="username">用户名</label><input class="input" id="username" autocomplete="username" required autofocus></div>
-      <div class="field"><label for="password">密码</label><div class="password-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required><button class="reveal" type="button" aria-label="显示密码" title="显示密码">👁</button></div></div>
-      <div class="form-error" id="error" role="alert"></div>
-      <button class="btn primary" id="submit" type="submit">登录</button>
-    </form>
-    <p class="auth-foot" id="registerLink"><a href="/register">创建用户账号</a></p>
-    <p class="auth-meta"><span>当前版本 <b class="app-version">—</b></span><span class="meta-sep" aria-hidden="true">·</span><a href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">个人主页</a></p>
-  </div></section>
-  <section class="auth-context"><div class="context-inner">
-    <div class="context-kicker">Self-hosted operations</div>
-    <h2>账号、协议和任务都在一个受控入口中。</h2>
-    <p>登录后可按权限管理微信账号、面板连接和脚本运行。协议接口继续为青龙等自动化调用方独立提供。</p>
-
-    <div class="changelog">
-      <div class="changelog-head">
-        <h3>版本更新</h3>
-        <span class="changelog-now">当前版本 <b class="app-version">—</b></span>
+<body class="auth-split">
+<main class="auth-card-layout">
+  <section class="auth-card">
+    <div class="auth-card-brand"><span class="brand-mark">Y</span><div><div class="brand-name">YYB Go Enhanced</div><div class="brand-meta">微信协议与自动化控制台</div></div></div>
+    <div class="auth-card-body">
+      <h1>欢迎回来</h1>
+      <p class="lead">使用管理员或已注册用户账号继续。</p>
+      <form id="form">
+        <div class="field"><label for="username">用户名</label><input class="input" id="username" autocomplete="username" required autofocus></div>
+        <div class="field"><label for="password">密码</label><div class="password-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required><button class="reveal" type="button" aria-label="显示密码" title="显示密码">👁</button></div></div>
+        <div class="form-error" id="error" role="alert"></div>
+        <button class="btn primary" id="submit" type="submit">登录</button>
+      </form>
+      <div class="auth-card-foot">
+        <p class="auth-foot" id="registerLink" style="margin:0"><a href="/register">创建用户账号</a></p>
+        <p class="auth-meta"><span>v<b class="app-version">—</b></span><span class="meta-sep" aria-hidden="true">·</span><a href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">个人主页</a></p>
       </div>
-      <ol class="changelog-list">
-        <li>
-          <span class="changelog-tag">v13</span>
-          <div class="changelog-body">
-            <b>账号隔离真正落地 + 界面整体焕新</b>
-            <p>修复「点运行一个账号却跑了全部」的问题：手动运行严格只跑选中的那一个账号，定时脚本只跑登录账号名下的账号，两条链路行为一致。安卓手机端（Xposed Hook）取码支持整体下线，只保留 Docker 部署与原生扫码协议。登录页与功能页视觉全面重做，普通用户界面不再出现任何管理入口，用户管理页仅管理员可访问。</p>
-          </div>
-        </li>
-        <li>
-          <span class="changelog-tag">v10</span>
-          <div class="changelog-body">
-            <b>账号隔离分两档 + 脚本目录可见范围</b>
-            <p>「运行」只跑你选中的那一个 code 账号；打开「定时」后按网关登录账号隔离，跑该登录账号名下的全部 code 账号，同一脚本只建一条任务、不会重复执行。管理员还能指定非管理员账号只能看到青龙里哪些文件夹下的脚本，看不到的脚本既列不出来、也无法运行或开定时。老版本遗留的「每个 code 账号一条、还启用着」的任务，打开运行管理时会自动收敛成一条登录账号级任务。</p>
-          </div>
-        </li>
-        <li>
-          <span class="changelog-tag">v9</span>
-          <div class="changelog-body">
-            <b>「运行账号」真的只跑这一个账号了</b>
-            <p>以前在网关上点「运行账号」，脚本会去网关枚举全部微信账号，于是把所有人的号都跑了一遍。现在网关建的任务只跑它自己那一个账号；你在青龙里直接运行同一个脚本不受影响，还是按青龙的全局 WECHAT_OPENIDS 取账号（写 ALL 就是全部账号）。</p>
-          </div>
-        </li>
-        <li>
-          <span class="changelog-tag">v8</span>
-          <div class="changelog-body">
-            <b>脚本列表改看「脚本文件」，不再看定时任务</b>
-            <p>以前这一页的脚本是从青龙的定时任务倒推出来的，于是你自己建的任务会被当成可用脚本，而同一个脚本既在青龙有全局任务、又被挂到账号上时，还会真的跑两遍。现在直接读青龙脚本目录里的脚本文件，并标出哪些脚本在青龙里已有全局任务；列表上方还能按目录筛选。面板没有这个接口时（老青龙、代代面板）会自动退回原来的方式，并在页面上说明。</p>
-          </div>
-        </li>
-        <li>
-          <span class="changelog-tag">v7.1</span>
-          <div class="changelog-body">
-            <b>「账号运行管理」能列出你的脚本了</b>
-            <p>这一页的脚本列表改成直接读青龙里的「全部定时任务」，不再要求任务目录事先配置成某个名字——以前漏配就一个脚本都显示不出来。列表为空时也会说清楚是「青龙里确实没有任务」还是「任务命令认不出脚本」。</p>
-          </div>
-        </li>
-        <li>
-          <span class="changelog-tag">v6</span>
-          <div class="changelog-body">
-            <b>修好了「串号」隐患（建议升级）</b>
-            <p>以前用普通账号登录网页后，能直接看到全部微信号——包括管理员的。现在网页登录只显示自己的账号，看不到别人的；青龙脚本带着令牌调用不受影响，照旧能取到全部账号的码。</p>
-          </div>
-        </li>
-      </ol>
-      <p class="changelog-more"><b>更早</b>：装上就默认安全（取码接口必须带令牌、陌生人抢注管理员被挡住、密码试错限速，v5）；取码接口支持访问令牌、双架构镜像与一键部署脚本（v4）；多个账号互相隔离（每人只看到自己扫码添加的微信）、每个微信号可单独关闭「脚本可读」、修复数据目录权限导致的启动失败。</p>
     </div>
+  </section>
 
-    <div class="context-foot">
-      <span class="context-foot-label">个人主页</span>
-      <a class="context-home" href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">zy.chun7.top<span class="context-home-ext" aria-hidden="true">↗</span></a>
+  <section class="auth-feature-strip">
+    <h2>账号、协议和任务，都在一个受控入口中。</h2>
+    <p>登录后按权限管理微信账号、面板连接与脚本运行。协议接口继续为青龙等自动化调用方独立提供。</p>
+    <div class="feature-grid">
+      <div class="feature-item"><span class="fi-icon">账</span><div><strong>多账号隔离</strong><p>每人只看到自己扫码添加的微信，管理员统一管理。</p></div></div>
+      <div class="feature-item"><span class="fi-icon">运</span><div><strong>精确到单账号的运行</strong><p>手动运行只跑选中账号，定时按登录账号隔离。</p></div></div>
+      <div class="feature-item"><span class="fi-icon">密</span><div><strong>默认安全</strong><p>取码接口 fail-closed，令牌未配置自动生成。</p></div></div>
     </div>
-  </div></section>
+    <div class="card-changelog">
+      <div class="changelog-head"><h3>版本更新</h3><span class="changelog-now">当前版本 <b class="app-version">—</b></span></div>
+      <ol class="changelog-list">
+        <li><span class="changelog-tag">v14</span><div class="changelog-body"><b>控制台界面整体重构 + 管理入口修复</b><p>统一设计系统：侧栏换成图标化导航（当前页高亮指示），卡片、按钮、表格全面升级质感与微动效；登录页改为居中卡片布局。修复普通用户登录后侧栏仍显示「用户管理」入口的权限显示错误——现在该入口仅管理员可见。</p></div></li>
+        <li><span class="changelog-tag">v13</span><div class="changelog-body"><b>账号隔离真正落地 + 安卓支持下线</b><p>修复「点运行一个账号却跑了全部」的问题：手动运行严格只跑选中的那一个账号，定时脚本只跑登录账号名下的账号。安卓手机端（Xposed Hook）取码支持整体下线，只保留 Docker 部署与原生扫码协议。</p></div></li>
+        <li><span class="changelog-tag">v10</span><div class="changelog-body"><b>账号隔离分两档 + 脚本目录可见范围</b><p>「运行」只跑选中的那一个 code 账号；打开「定时」后按网关登录账号隔离，同一脚本只建一条任务。管理员可指定非管理员只能看到放行目录下的脚本。</p></div></li>
+      </ol>
+    </div>
+  </section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
 document.querySelector('.reveal').onclick=e=>{const p=$('password'),show=p.type==='password';p.type=show?'text':'password';e.currentTarget.setAttribute('aria-label',show?'隐藏密码':'显示密码')};
 $('form').onsubmit=async e=>{e.preventDefault();$('error').textContent='';$('submit').disabled=true;try{const params=new URLSearchParams(location.search),response=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,password:$('password').value,next:params.get('next')||'/'})}),json=await response.json();if(!response.ok||json.code!==0)throw new Error(json.msg||'登录失败');location.href=json.data.next||'/'}catch(error){$('error').textContent=error.message;$('submit').disabled=false}};
 if(new URLSearchParams(location.search).get('registration')==='disabled'){$('error').textContent='管理员已关闭新用户注册';$('registerLink').hidden=true}
-// 当前版本号取自镜像内的 /static/version.json（构建时由 VERSION 构建参数写入）。
-// 这里故意不写死版本号：取不到就保持占位符「—」，这样发版后不用回来改模板。
 fetch('/static/version.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{const v=d&&typeof d.version==='string'?d.version.trim():'';if(!v)return;document.querySelectorAll('.app-version').forEach(el=>{el.textContent=v})}).catch(()=>{});
 </script>
 </body>

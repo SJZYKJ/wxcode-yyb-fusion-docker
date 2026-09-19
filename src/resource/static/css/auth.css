@@ -27,3 +27,29 @@
 /* 平板竖屏等中等宽度：左栏固定 480px 会把右栏挤到 230px 左右，一行只放得下 8 个字。
    这里把左栏收紧到 400px、右栏内边距减到 32px，右栏正文宽度可回到 350px 以上。 */
 @media(min-width:761px) and (max-width:1080px){.auth-layout{grid-template-columns:minmax(300px,400px) 1fr}.auth-context{padding:40px 32px}.auth-context h2{font-size:23px;line-height:1.32}.context-inner{max-width:100%}}
+
+/* ============================================================
+   控制台功能页统一升级（settings / users 等，v13 重构）
+   ============================================================ */
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:22px;box-shadow:0 1px 3px rgba(25,31,40,.05),0 4px 16px rgba(25,31,40,.04);transition:box-shadow .18s ease}
+.card:hover{box-shadow:0 2px 6px rgba(25,31,40,.07),0 8px 24px rgba(25,31,40,.06)}
+.card h2{margin:0;font-size:16px;font-weight:730;letter-spacing:0}
+.page-title h1{margin:0;font-size:22px;font-weight:760;letter-spacing:0}
+.page-title p{margin:6px 0 0;color:var(--muted)}
+.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
+.description{color:var(--muted);margin:6px 0 18px;line-height:1.6;font-size:13px}
+.notice{border:1px solid var(--line);background:#f7f7fd;border-radius:10px;padding:12px 14px;color:var(--muted);margin-bottom:16px;font-size:13px}
+.notice.ok{background:var(--success-soft, #edf8f1);border-color:#cde7d6;color:var(--ok, #18794e)}
+.btn{height:42px;border:1px solid transparent;border-radius:10px;padding:0 16px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-weight:680;cursor:pointer;text-decoration:none;transition:background .15s ease,box-shadow .15s ease,transform .15s ease}
+.btn:active{transform:translateY(1px)}
+.btn.primary{width:100%;background:var(--brand);color:#fff;box-shadow:0 2px 8px rgba(84,87,214,.25)}
+.btn.primary:hover{background:var(--brand-dark);box-shadow:0 3px 12px rgba(84,87,214,.32)}
+.btn.secondary{border-color:var(--line);background:#fff}
+.btn.secondary:hover{background:#f5f6f8}
+.btn.danger{color:var(--danger);border-color:var(--line);background:#fff}
+.btn.danger:hover{background:#fdf1f1;border-color:#e5c9c9}
+.session-list{display:grid;gap:10px;margin-top:16px}
+.session{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:14px}
+.session strong{display:block;font-size:14px}
+.session small{display:block;color:var(--muted);margin-top:3px}
+

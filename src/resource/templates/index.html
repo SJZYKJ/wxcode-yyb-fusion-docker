@@ -139,11 +139,15 @@
       background: var(--bg);
       color: var(--ink);
       text-decoration: none;
-      transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
     }
 
     .btn:hover {
       background: var(--surface-strong);
+    }
+
+    .btn:active {
+      transform: translateY(1px);
     }
 
     .btn:focus-visible,
@@ -158,11 +162,13 @@
       color: var(--bg);
       border-color: var(--primary);
       font-weight: 700;
+      box-shadow: 0 2px 8px oklch(0.52 0.2 280 / 0.25);
     }
 
     .btn.primary:hover {
       background: var(--primary-hover);
       border-color: var(--primary-hover);
+      box-shadow: 0 3px 12px oklch(0.52 0.2 280 / 0.32);
     }
 
     .btn.secondary {
@@ -235,6 +241,7 @@
       padding: 18px;
       display: grid;
       gap: 12px;
+      box-shadow: 0 1px 3px oklch(0.2 0.02 285 / 0.05);
     }
 
     .summary h2 {
@@ -258,26 +265,29 @@
     }
 
     .stat-chip {
-      min-height: 32px;
+      min-height: 34px;
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 6px 10px;
+      padding: 7px 12px;
       border-radius: 999px;
       background: var(--surface);
       border: 1px solid var(--line);
       color: var(--muted);
+      box-shadow: var(--surface, 0 1px 2px oklch(0.2 0.02 285 / 0.04));
     }
 
     .stat-chip strong {
-      color: var(--ink);
+      color: var(--primary);
       font-weight: 760;
+      font-size: 15px;
+      font-variant-numeric: tabular-nums;
     }
 
     .quick-actions {
       min-width: 260px;
-      background: var(--ink);
-      color: var(--bg);
+      background: linear-gradient(135deg, var(--accent-soft), var(--primary-soft, oklch(0.95 0.03 280)));
+      border: 1px solid oklch(0.86 0.03 250);
       border-radius: var(--radius);
       padding: 16px;
       display: grid;
@@ -287,18 +297,19 @@
 
     .quick-actions p {
       margin: 0;
-      color: oklch(0.86 0.012 250);
+      color: var(--muted);
       font-size: 13px;
     }
 
     .quick-actions .btn {
-      background: oklch(0.25 0.028 252);
-      color: var(--bg);
-      border-color: oklch(0.34 0.028 252);
+      background: var(--bg);
+      color: var(--ink);
+      border-color: var(--line);
     }
 
     .quick-actions .btn:hover {
-      background: oklch(0.31 0.032 252);
+      background: var(--surface-strong);
+      border-color: var(--accent);
     }
 
     .account-band,
@@ -306,6 +317,7 @@
       background: var(--bg);
       border: 1px solid var(--line);
       border-radius: var(--radius);
+      box-shadow: 0 1px 3px oklch(0.2 0.02 285 / 0.05);
     }
 
     .section-head {
@@ -366,17 +378,20 @@
       grid-template-columns: 36px minmax(0, 1fr);
       gap: 9px;
       align-items: start;
-      transition: background 160ms ease, border-color 160ms ease;
+      transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
     }
 
     .account-card:hover {
       background: var(--bg);
       border-color: oklch(0.78 0.035 190);
+      box-shadow: 0 2px 8px oklch(0.2 0.02 285 / 0.08);
+      transform: translateY(-1px);
     }
 
     .account-card.selected {
       background: var(--accent-soft);
       border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 2px 8px oklch(0.5 0.11 210 / 0.16);
     }
 
     .avatar {

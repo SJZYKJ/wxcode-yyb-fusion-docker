@@ -1,15 +1,38 @@
+/* ============================================================
+   YYB Go 控制台统一设计系统（v13 重构）
+   侧栏 + 顶栏 + 卡片 + 控件 + 表格 + 徽章 + 空状态
+   ============================================================ */
+
 :root {
-  --platform-sidebar: 244px;
+  --platform-sidebar: 248px;
   --platform-header: 64px;
-  --platform-bg: oklch(0.973 0.008 285);
+  --platform-bg: oklch(0.975 0.008 285);
   --platform-surface: oklch(1 0 0);
-  --platform-ink: oklch(0.2 0.03 280);
+  --platform-surface-2: oklch(0.987 0.005 285);
+  --platform-ink: oklch(0.205 0.03 280);
   --platform-muted: oklch(0.46 0.03 280);
-  --platform-line: oklch(0.89 0.015 285);
+  --platform-faint: oklch(0.58 0.02 280);
+  --platform-line: oklch(0.895 0.015 285);
+  --platform-line-strong: oklch(0.86 0.02 285);
   --platform-accent: oklch(0.52 0.2 280);
-  --platform-sidebar-bg: oklch(0.2 0.045 285);
-  --platform-sidebar-ink: oklch(0.93 0.008 250);
+  --platform-accent-hover: oklch(0.46 0.19 280);
+  --platform-accent-soft: oklch(0.95 0.03 280);
+  --platform-success: oklch(0.55 0.135 150);
+  --platform-success-soft: oklch(0.95 0.04 150);
+  --platform-danger: oklch(0.55 0.18 25);
+  --platform-danger-soft: oklch(0.955 0.032 25);
+  --platform-warning: oklch(0.68 0.135 78);
+  --platform-warning-soft: oklch(0.96 0.04 78);
+  --platform-info: oklch(0.5 0.11 210);
+  --platform-info-soft: oklch(0.95 0.03 210);
+  --platform-sidebar-bg: oklch(0.19 0.045 285);
+  --platform-sidebar-ink: oklch(0.94 0.008 250);
   --platform-sidebar-muted: oklch(0.72 0.025 285);
+  --platform-shadow-sm: 0 1px 2px oklch(0.2 0.02 285 / 0.05);
+  --platform-shadow: 0 1px 3px oklch(0.2 0.02 285 / 0.07), 0 4px 16px oklch(0.2 0.02 285 / 0.05);
+  --platform-shadow-lg: 0 12px 32px oklch(0.2 0.02 285 / 0.14);
+  --platform-radius: 12px;
+  --platform-radius-sm: 8px;
 }
 
 body.platform-ready { background: var(--platform-bg); }
@@ -17,66 +40,154 @@ body.platform-ready > header { display: none !important; }
 body.platform-ready > main { display: none !important; }
 body.platform-ready > .app { display: none !important; }
 
+/* ---------- 骨架 ---------- */
 .platform-shell { min-height: 100vh; display: grid; grid-template-columns: var(--platform-sidebar) minmax(0, 1fr); }
-.platform-sidebar { position: fixed; inset: 0 auto 0 0; width: var(--platform-sidebar); display: flex; flex-direction: column; background: var(--platform-sidebar-bg); color: var(--platform-sidebar-ink); z-index: 40; }
-.platform-brand { height: var(--platform-header); display: flex; align-items: center; gap: 11px; padding: 0 18px; border-bottom: 1px solid oklch(0.31 0.04 285); color: inherit; text-decoration: none; }
-.platform-brand-mark { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; background: linear-gradient(135deg, oklch(0.55 0.2 280), oklch(0.45 0.19 300)); color: white; font-weight: 800; }
+
+/* ---------- 侧栏 ---------- */
+.platform-sidebar {
+  position: fixed; inset: 0 auto 0 0; width: var(--platform-sidebar);
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, oklch(0.21 0.05 285), oklch(0.17 0.045 285));
+  color: var(--platform-sidebar-ink); z-index: 40;
+  box-shadow: inset -1px 0 0 oklch(1 0 0 / 0.05);
+}
+.platform-brand {
+  height: var(--platform-header); display: flex; align-items: center; gap: 12px;
+  padding: 0 18px; border-bottom: 1px solid oklch(0.31 0.04 285); color: inherit; text-decoration: none;
+}
+.platform-brand-mark {
+  width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px;
+  background: linear-gradient(135deg, oklch(0.56 0.2 280), oklch(0.46 0.19 300));
+  color: white; font-weight: 800; font-size: 15px;
+  box-shadow: 0 4px 12px oklch(0.52 0.2 280 / 0.4);
+}
 .platform-brand-copy { min-width: 0; }
-.platform-brand-copy strong { display: block; font-size: 15px; line-height: 1.2; }
+.platform-brand-copy strong { display: block; font-size: 15px; line-height: 1.2; letter-spacing: 0.2px; }
 .platform-brand-copy span { display: block; margin-top: 2px; color: var(--platform-sidebar-muted); font-size: 11px; }
-.platform-nav { flex: 1; overflow-y: auto; padding: 16px 10px; }
-.platform-nav-group { margin: 0 8px 7px; color: var(--platform-sidebar-muted); font-size: 11px; }
-.platform-nav a { min-height: 40px; display: flex; align-items: center; gap: 10px; margin: 2px 0; padding: 8px 11px; border-radius: 6px; color: var(--platform-sidebar-muted); text-decoration: none; transition: background 150ms ease, color 150ms ease; }
+
+.platform-nav { flex: 1; overflow-y: auto; padding: 14px 12px; scrollbar-width: thin; scrollbar-color: oklch(0.34 0.04 285) transparent; }
+.platform-nav::-webkit-scrollbar { width: 6px; }
+.platform-nav::-webkit-scrollbar-thumb { background: oklch(0.34 0.04 285); border-radius: 3px; }
+.platform-nav-group {
+  margin: 12px 10px 6px; color: var(--platform-sidebar-muted); font-size: 11px;
+  font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; opacity: 0.75;
+}
+.platform-nav a {
+  min-height: 42px; display: flex; align-items: center; gap: 12px; margin: 2px 0;
+  padding: 9px 12px; border-radius: 9px; color: var(--platform-sidebar-muted);
+  text-decoration: none; position: relative;
+  transition: background 150ms ease, color 150ms ease, transform 150ms ease;
+}
 .platform-nav a[hidden], .platform-sidebar-foot[hidden] { display: none; }
 .platform-nav a:hover { color: var(--platform-sidebar-ink); background: oklch(0.27 0.045 285); }
-.platform-nav a[aria-current="page"] { color: white; background: oklch(0.3 0.06 285); font-weight: 680; }
-.platform-nav-icon { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; color: currentColor; font-size: 13px; font-weight: 750; }
-.platform-sidebar-foot { padding: 12px 10px; border-top: 1px solid oklch(0.31 0.04 285); }
-.platform-sidebar-foot button { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 0; border-radius: 6px; background: transparent; color: var(--platform-sidebar-muted); text-align: left; cursor: pointer; }
+.platform-nav a[aria-current="page"] {
+  color: white; background: linear-gradient(90deg, oklch(0.36 0.08 285), oklch(0.28 0.06 285));
+  font-weight: 680; box-shadow: inset 3px 0 0 var(--platform-accent);
+}
+.platform-nav a > svg {
+  flex: 0 0 auto; width: 18px; height: 18px; opacity: 0.9;
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+.platform-nav a:hover > svg { opacity: 1; }
+.platform-nav a[aria-current="page"] > svg { opacity: 1; color: oklch(0.74 0.14 280); }
+.platform-sidebar-foot button > svg { flex: 0 0 auto; width: 18px; height: 18px; opacity: 0.85; }
+.platform-sidebar-foot button:hover > svg { opacity: 1; }
+
+.platform-sidebar-foot { padding: 12px; border-top: 1px solid oklch(0.31 0.04 285); }
+.platform-sidebar-foot button {
+  width: 100%; min-height: 42px; display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px; border: 0; border-radius: 9px; background: transparent;
+  color: var(--platform-sidebar-muted); text-align: left; cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
 .platform-sidebar-foot button:hover { color: white; background: oklch(0.27 0.045 285); }
+
+/* ---------- 主区 ---------- */
 .platform-stage { grid-column: 2; min-width: 0; }
-.platform-topbar { height: var(--platform-header); position: sticky; top: 0; z-index: 35; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 24px; background: oklch(1 0 0 / .96); border-bottom: 1px solid var(--platform-line); }
+.platform-topbar {
+  height: var(--platform-header); position: sticky; top: 0; z-index: 35;
+  display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 24px;
+  background: oklch(1 0 0 / 0.88); backdrop-filter: saturate(180%) blur(10px);
+  border-bottom: 1px solid var(--platform-line);
+}
 .platform-page-context { min-width: 0; }
-.platform-breadcrumb { color: var(--platform-muted); font-size: 11px; }
-.platform-page-title { margin-top: 2px; color: var(--platform-ink); font-size: 15px; font-weight: 730; }
-.platform-user { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.platform-breadcrumb { color: var(--platform-muted); font-size: 11px; letter-spacing: 0.2px; }
+.platform-page-title { margin-top: 2px; color: var(--platform-ink); font-size: 16px; font-weight: 730; letter-spacing: 0; }
+.platform-user { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .platform-user-copy { display: grid; text-align: right; line-height: 1.25; }
 .platform-user-copy strong { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .platform-user-copy span { color: var(--platform-muted); font-size: 11px; }
-.platform-avatar { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; background: oklch(0.92 0.04 285); color: var(--platform-accent); font-weight: 800; }
-.platform-menu { display: none; width: 36px; height: 36px; border: 1px solid var(--platform-line); border-radius: 6px; background: white; color: var(--platform-ink); font-size: 19px; cursor: pointer; }
+.platform-avatar {
+  width: 36px; height: 36px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%;
+  background: linear-gradient(135deg, var(--platform-accent-soft), var(--platform-info-soft));
+  color: var(--platform-accent); font-weight: 800; font-size: 14px;
+  box-shadow: inset 0 0 0 1px var(--platform-line);
+}
+.platform-menu {
+  display: none; width: 36px; height: 36px; border: 1px solid var(--platform-line); border-radius: var(--platform-radius-sm);
+  background: white; color: var(--platform-ink); font-size: 19px; cursor: pointer;
+}
 .platform-main { min-width: 0; }
-.platform-main > main { width: min(1480px, 100%) !important; margin: 0 auto !important; padding: 22px 24px 38px !important; }
+.platform-main > main { width: min(1480px, 100%) !important; margin: 0 auto !important; padding: 24px 24px 44px !important; }
 .platform-overlay { display: none; }
 
-dialog.platform-dialog { width: min(520px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--platform-line); border-radius: 8px; background: white; color: var(--platform-ink); box-shadow: 0 24px 70px oklch(0.15 0.05 285 / .3); }
-dialog.platform-dialog::backdrop { background: oklch(0.13 0.05 285 / .55); }
-.platform-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--platform-line); }
-.platform-dialog-head h2 { margin: 0; font-size: 17px; }
-.platform-dialog-head p { margin: 4px 0 0; color: var(--platform-muted); font-size: 12px; }
-.platform-dialog-close { width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--platform-muted); font-size: 22px; cursor: pointer; }
+/* ---------- 弹窗 ---------- */
+dialog.platform-dialog {
+  width: min(540px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--platform-line);
+  border-radius: var(--platform-radius); background: white; color: var(--platform-ink);
+  box-shadow: var(--platform-shadow-lg);
+}
+dialog.platform-dialog::backdrop { background: oklch(0.13 0.05 285 / 0.5); backdrop-filter: blur(2px); }
+.platform-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--platform-line); }
+.platform-dialog-head h2 { margin: 0; font-size: 17px; font-weight: 730; }
+.platform-dialog-head p { margin: 5px 0 0; color: var(--platform-muted); font-size: 12.5px; }
+.platform-dialog-close { width: 32px; height: 32px; border: 0; border-radius: var(--platform-radius-sm); background: transparent; color: var(--platform-muted); font-size: 22px; cursor: pointer; line-height: 1; }
 .platform-dialog-close:hover { background: var(--platform-bg); color: var(--platform-ink); }
-.platform-dialog-body { display: grid; gap: 14px; padding: 18px 20px; }
-.platform-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--platform-line); background: var(--platform-bg); }
+.platform-dialog-body { display: grid; gap: 16px; padding: 22px; }
+.platform-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px; border-top: 1px solid var(--platform-line); background: var(--platform-surface-2); border-radius: 0 0 var(--platform-radius) var(--platform-radius); }
 
-.platform-log-drawer { width: min(760px, 92vw); max-width: none; height: 100vh; max-height: none; margin: 0 0 0 auto; padding: 0; border: 0; border-left: 1px solid var(--platform-line); background: oklch(0.16 0.04 285); color: oklch(0.95 0.008 250); }
-.platform-log-drawer::backdrop { background: oklch(0.13 0.05 285 / .45); }
+/* ---------- 日志抽屉 ---------- */
+.platform-log-drawer {
+  width: min(760px, 92vw); max-width: none; height: 100vh; max-height: none; margin: 0 0 0 auto;
+  padding: 0; border: 0; border-left: 1px solid var(--platform-line);
+  background: oklch(0.16 0.04 285); color: oklch(0.95 0.008 250);
+}
+.platform-log-drawer::backdrop { background: oklch(0.13 0.05 285 / 0.45); }
 .platform-log-layout { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
 .platform-log-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid oklch(0.29 0.04 285); }
 .platform-log-head h2 { margin: 0; font-size: 16px; color: white; }
 .platform-log-head p { margin: 5px 0 0; color: oklch(0.72 0.025 285); font-size: 12px; }
-.platform-log-close { width: 34px; height: 34px; border: 1px solid oklch(0.34 0.02 252); border-radius: 6px; background: transparent; color: white; font-size: 21px; cursor: pointer; }
+.platform-log-close { width: 34px; height: 34px; border: 1px solid oklch(0.34 0.02 252); border-radius: var(--platform-radius-sm); background: transparent; color: white; font-size: 21px; cursor: pointer; line-height: 1; }
 .platform-log-content { margin: 0; padding: 18px 20px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .platform-log-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-top: 1px solid oklch(0.29 0.04 285); color: oklch(0.72 0.025 285); font-size: 12px; }
-.platform-log-foot button { min-height: 34px; border: 1px solid oklch(0.37 0.04 285); border-radius: 6px; padding: 7px 10px; background: oklch(0.23 0.045 285); color: white; cursor: pointer; }
+.platform-log-foot button { min-height: 34px; border: 1px solid oklch(0.37 0.04 285); border-radius: var(--platform-radius-sm); padding: 7px 12px; background: oklch(0.23 0.045 285); color: white; cursor: pointer; }
+.platform-log-foot button:hover { background: oklch(0.28 0.05 285); }
 
+/* ---------- 通用控件（供各页面复用） ---------- */
+.platform-ready .input,
+.platform-ready input.input,
+.platform-ready .field input,
+.platform-ready .field select,
+.platform-ready .field textarea {
+  width: 100%; border: 1px solid var(--platform-line); border-radius: var(--platform-radius-sm);
+  background: white; color: var(--platform-ink); padding: 8px 12px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.platform-ready .field input:focus,
+.platform-ready .field select:focus,
+.platform-ready .field textarea:focus,
+.platform-ready input.input:focus {
+  border-color: var(--platform-accent); box-shadow: 0 0 0 3px oklch(0.52 0.2 280 / 0.14); outline: none;
+}
+
+/* ---------- 响应式 ---------- */
 @media (max-width: 860px) {
   .platform-shell { grid-template-columns: minmax(0, 1fr); }
-  .platform-sidebar { transform: translateX(-100%); transition: transform 180ms cubic-bezier(.22,1,.36,1); }
+  .platform-sidebar { transform: translateX(-100%); transition: transform 200ms cubic-bezier(.22,1,.36,1); }
   body.platform-nav-open .platform-sidebar { transform: translateX(0); }
   .platform-stage { grid-column: 1; }
   .platform-menu { display: grid; place-items: center; }
-  .platform-overlay { display: block; position: fixed; inset: 0; z-index: 39; border: 0; background: oklch(0.13 0.05 285 / .45); opacity: 0; pointer-events: none; transition: opacity 180ms ease; }
+  .platform-overlay { display: block; position: fixed; inset: 0; z-index: 39; border: 0; background: oklch(0.13 0.05 285 / 0.45); opacity: 0; pointer-events: none; transition: opacity 200ms ease; }
   body.platform-nav-open .platform-overlay { opacity: 1; pointer-events: auto; }
   .platform-topbar { padding: 0 14px; }
   .platform-main > main { padding: 16px 12px 28px !important; }

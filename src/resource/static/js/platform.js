@@ -10,21 +10,34 @@
   const main = document.querySelector("main");
   if (!main) return;
 
+  const icons = {
+    home: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/></svg>',
+    scan: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
+    runs: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>',
+    users: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    docs: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>',
+    logout: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>'
+  };
   const nav = [
-    ["/", "台", "工作台", true, false],
-    ["/scan", "+", "添加账号", true, false],
-    ["/runs", "运", "运行管理", true, false],
-    ["/users", "人", "用户管理", false, true],
-    ["/settings", "设", "个人设置", true, true],
-    ["/docs/index.html", "API", "接口文档", true, false]
+    { href: "/", icon: "home", label: "工作台", adminOnly: false, authOnly: false },
+    { href: "/scan", icon: "scan", label: "添加账号", adminOnly: false, authOnly: false },
+    { href: "/runs", icon: "runs", label: "运行管理", adminOnly: false, authOnly: false },
+    { href: "/users", icon: "users", label: "用户管理", adminOnly: true, authOnly: true },
+    { href: "/settings", icon: "settings", label: "个人设置", adminOnly: false, authOnly: true },
+    { href: "/docs/index.html", icon: "docs", label: "接口文档", adminOnly: false, authOnly: false }
   ];
+  const navLinks = nav.map(item => {
+    const isCurrent = location.pathname === item.href || (item.href !== "/" && location.pathname.startsWith(item.href));
+    return `<a href="${item.href}" data-admin-only="${item.adminOnly}" data-auth-only="${item.authOnly}" ${item.adminOnly ? "hidden" : ""} ${isCurrent ? 'aria-current="page"' : ""}>${icons[item.icon]}<span>${item.label}</span></a>`;
+  }).join("");
   const shell = document.createElement("div");
   shell.className = "platform-shell";
   shell.innerHTML = `
     <aside class="platform-sidebar" aria-label="主导航">
       <a class="platform-brand" href="/"><span class="platform-brand-mark">Y</span><span class="platform-brand-copy"><strong>YYB Go</strong><span>微信协议管理平台</span></span></a>
-      <nav class="platform-nav"><div class="platform-nav-group">平台功能</div>${nav.map(([href, icon, label, visible, authOnly]) => `<a href="${href}" data-admin-only="${!visible}" data-auth-only="${authOnly}" ${location.pathname === href ? 'aria-current="page"' : ""}><span class="platform-nav-icon">${icon}</span><span>${label}</span></a>`).join("")}</nav>
-      <div class="platform-sidebar-foot"><button type="button" id="platformLogout"><span class="platform-nav-icon">退</span><span>退出登录</span></button></div>
+      <nav class="platform-nav"><div class="platform-nav-group">工作区</div>${navLinks}</nav>
+      <div class="platform-sidebar-foot"><button type="button" id="platformLogout">${icons.logout}<span>退出登录</span></button></div>
     </aside>
     <button class="platform-overlay" id="platformOverlay" type="button" aria-label="关闭导航"></button>
     <section class="platform-stage">
@@ -57,8 +70,13 @@
     document.getElementById("platformUserName").textContent = name;
     document.getElementById("platformUserRole").textContent = authEnabled ? (user.role === "admin" ? "管理员" : "普通用户") : "本机模式";
     document.getElementById("platformAvatar").textContent = Array.from(name)[0]?.toUpperCase() || "Y";
-    shell.querySelectorAll('[data-admin-only="true"]').forEach(link => { link.hidden = user.role !== "admin"; });
-    shell.querySelectorAll('[data-auth-only="true"]').forEach(link => { link.hidden = !authEnabled; });
+    // 管理项仅管理员可见；登录项仅在启用鉴权时可见。两条件取「或」（此前两行各自赋值互相覆盖，
+    // 导致普通用户也能看到「用户管理」入口）。
+    shell.querySelectorAll(".platform-nav a[data-admin-only], .platform-nav a[data-auth-only]").forEach(link => {
+      const adminHidden = link.dataset.adminOnly === "true" && user.role !== "admin";
+      const authHidden = link.dataset.authOnly === "true" && !authEnabled;
+      link.hidden = adminHidden || authHidden;
+    });
     document.querySelector(".platform-sidebar-foot").hidden = !authEnabled;
   }).catch(() => {
     document.getElementById("platformUserName").textContent = "状态未知";

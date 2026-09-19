@@ -17,7 +17,7 @@
     .brand p { margin:2px 0 0; color:var(--muted); font-size:12px; }
     .link { color:var(--ink); text-decoration:none; border:1px solid var(--line); border-radius:var(--radius); padding:8px 12px; background:#fff; }
     main { width:min(920px,calc(100% - 32px)); margin:32px auto; display:grid; grid-template-columns:minmax(300px,380px) minmax(0,1fr); gap:20px; align-items:start; }
-    .panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+    .panel { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; box-shadow:0 1px 3px rgba(25,31,40,.05),0 4px 16px rgba(25,31,40,.04); }
     .head { padding:18px 20px; border-bottom:1px solid var(--line); }
     .head h2 { margin:0; font-size:17px; letter-spacing:0; }
     .head p { margin:4px 0 0; color:var(--muted); font-size:13px; }
@@ -37,8 +37,8 @@
     .status.pending { color:var(--muted); } .status.scanned { color:#2166a5; } .status.ok { color:var(--success); } .status.error { color:var(--danger); }
     .countdown { min-height:18px; margin-top:2px; text-align:center; color:var(--muted); font-size:12px; }
     .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:18px; }
-    .btn { min-height:38px; border:1px solid var(--line); border-radius:var(--radius); padding:8px 13px; display:inline-flex; align-items:center; justify-content:center; gap:7px; background:#fff; color:var(--ink); }
-    .btn:hover { background:#f5f6f8; } .btn.primary { background:var(--primary); border-color:var(--primary); color:#fff; } .btn.primary:hover { background:var(--primary-hover); } .btn:disabled { cursor:wait; opacity:.6; }
+    .btn { min-height:38px; border:1px solid var(--line); border-radius:var(--radius); padding:8px 13px; display:inline-flex; align-items:center; justify-content:center; gap:7px; background:#fff; color:var(--ink); transition:background .15s ease,box-shadow .15s ease,transform .15s ease; }
+    .btn:hover { background:#f5f6f8; } .btn:active { transform:translateY(1px); } .btn.primary { background:var(--primary); border-color:var(--primary); color:#fff; box-shadow:0 2px 8px rgba(84,87,214,.25); } .btn.primary:hover { background:var(--primary-hover); box-shadow:0 3px 12px rgba(84,87,214,.32); } .btn:disabled { cursor:wait; opacity:.6; }
     .account { display:none; }
     .account.visible { display:block; }
     .identity { padding:14px; background:var(--success-soft); border:1px solid #cde7d6; border-radius:var(--radius); }
