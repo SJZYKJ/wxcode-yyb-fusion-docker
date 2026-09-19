@@ -9,26 +9,26 @@
     :root {
       color-scheme: light;
       --bg: oklch(1 0 0);
-      --bg-soft: oklch(0.974 0.004 250);
-      --surface: oklch(0.986 0.004 250);
-      --surface-strong: oklch(0.948 0.009 250);
-      --ink: oklch(0.19 0.025 252);
-      --muted: oklch(0.43 0.025 252);
-      --faint: oklch(0.58 0.018 252);
-      --line: oklch(0.885 0.012 250);
-      --primary: oklch(0.54 0.205 3);
-      --primary-hover: oklch(0.48 0.195 3);
-      --accent: oklch(0.44 0.112 190);
-      --accent-soft: oklch(0.94 0.027 190);
-      --success: oklch(0.55 0.135 145);
-      --success-soft: oklch(0.94 0.035 145);
+      --bg-soft: oklch(0.973 0.008 285);
+      --surface: oklch(0.985 0.005 285);
+      --surface-strong: oklch(0.946 0.012 285);
+      --ink: oklch(0.2 0.03 280);
+      --muted: oklch(0.44 0.03 280);
+      --faint: oklch(0.58 0.02 280);
+      --line: oklch(0.89 0.015 285);
+      --primary: oklch(0.52 0.2 280);
+      --primary-hover: oklch(0.46 0.19 280);
+      --accent: oklch(0.5 0.11 210);
+      --accent-soft: oklch(0.94 0.03 210);
+      --success: oklch(0.55 0.135 150);
+      --success-soft: oklch(0.94 0.04 150);
       --warning: oklch(0.68 0.135 78);
       --warning-soft: oklch(0.955 0.04 78);
       --danger: oklch(0.55 0.18 25);
       --danger-soft: oklch(0.955 0.032 25);
-      --code-bg: oklch(0.16 0.022 252);
-      --code-ink: oklch(0.96 0.006 250);
-      --radius: 8px;
+      --code-bg: oklch(0.17 0.035 280);
+      --code-ink: oklch(0.96 0.006 280);
+      --radius: 12px;
       --topbar-h: 68px;
     }
 
@@ -94,10 +94,11 @@
       border-radius: var(--radius);
       display: grid;
       place-items: center;
-      background: var(--ink);
-      color: var(--bg);
+      background: linear-gradient(135deg, oklch(0.55 0.2 280), oklch(0.45 0.19 300));
+      color: white;
       font-weight: 800;
       letter-spacing: 0;
+      box-shadow: 0 4px 14px oklch(0.52 0.2 280 / 0.35);
     }
 
     .brand-title {
@@ -707,10 +708,8 @@
       </div>
       <div class="top-actions">
         <span class="status-pill" id="healthPill"><span class="status-dot"></span><span>检测服务中</span></span>
-        <span class="status-pill" id="wxcodePill"><span class="status-dot"></span><span>设备取码检测中</span></span>
         <a class="btn secondary" href="/runs">运行管理</a>
         <a class="btn secondary" href="/docs/index.html">Swagger</a>
-        <a class="btn secondary" href="http://127.0.0.1:8088/" target="_blank" rel="noopener" title="wxcode Xposed 取码服务(微信hook)">wxcode取码</a>
         <a class="btn secondary" href="/users" id="usersEntry" hidden>用户管理</a>
         <a class="btn secondary" href="/settings">个人设置</a>
         <a class="btn primary" href="/scan">扫码添加</a>
@@ -1138,32 +1137,6 @@
         pill.querySelector("span:last-child").textContent = "服务异常";
       }
     }
-    async function loadWxcodeStatus() {
-      const pill = $("wxcodePill");
-      try {
-        const status = await api("GET", "/api/wxcode/status");
-        if (!status.enabled) {
-          pill.classList.remove("ok", "bad");
-          pill.querySelector("span:last-child").textContent = "未配置设备取码";
-          return;
-        }
-        const online = (status.endpoints || []).filter(e => e.online);
-        if (online.length > 0) {
-          pill.classList.add("ok");
-          pill.classList.remove("bad");
-          pill.querySelector("span:last-child").textContent = `设备取码在线(${online.length}/${status.endpoints.length})`;
-        } else {
-          pill.classList.add("bad");
-          pill.classList.remove("ok");
-          pill.querySelector("span:last-child").textContent = "设备取码离线";
-        }
-      } catch {
-        pill.classList.add("bad");
-        pill.classList.remove("ok");
-        pill.querySelector("span:last-child").textContent = "设备取码不可用";
-      }
-    }
-
     async function loadAccounts() {
       $("accountStrip").innerHTML = `<div class="empty-state">账号加载中</div>`;
       try {
@@ -1507,7 +1480,6 @@
     });
 
     loadHealth();
-    loadWxcodeStatus();
     loadFeatures();
     loadMe().then(isAdmin => {
       loadAccounts();
@@ -1515,7 +1487,6 @@
       if (isAdmin) { loadQingLongConfig(); loadScriptScope(); }
     });
     setInterval(loadHealth, 15000);
-    setInterval(loadWxcodeStatus, 30000);
   </script>
   <script src="/static/js/platform.js"></script>
 </body>

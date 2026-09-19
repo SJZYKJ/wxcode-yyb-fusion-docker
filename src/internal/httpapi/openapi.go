@@ -313,45 +313,14 @@ func newOpenAPISpec() map[string]any {
 					}),
 				),
 			},
-			"/wxapp/deviceCode": map[string]any{
-				"post": openAPIOperation(
-					[]string{"wxcode"},
-					"从本机 wxcode Xposed 服务取小程序 code（设备直取）",
-					nil,
-					jsonRequestBody(refSchema("DeviceCodeRequest")),
-					defaulted(map[string]any{
-						"200": jsonResponse("设备直取 code 结果。", refSchema("DeviceCodeResponse")),
-					}),
-				),
-			},
 			"/login": map[string]any{
 				"post": openAPIOperation(
 					[]string{"fusion"},
-					"融合取码自动路由：只有 app_id 走设备 Hook，带 ref 走 login_buffer 原生协议，失败自动互相兜底",
+					"融合取码自动路由（v11 起仅原生扫码协议）：带 ref 指定账号，不带 ref 取默认账号",
 					nil,
 					jsonRequestBody(refSchema("FusionCodeRequest")),
 					defaulted(map[string]any{
 						"200": jsonResponse("取码结果（含 source/fallback/openid/result）。", refSchema("FusionCodeResponse")),
-					}),
-				),
-			},
-			"/wxcode/hookcfg": map[string]any{
-				"get": openAPIOperation(
-					[]string{"fusion"},
-					"下发 Zygisk 设备 Hook 的端口与微信版本类名映射（纯文本）",
-					[]map[string]any{queryStringParam("v", "微信版本号，如 8.0.76", false)},
-					nil,
-					defaulted(map[string]any{"200": textResponse("port/j1/c/a1/a7/j1_static/j1_instance/matched")}),
-				),
-			},
-			"/wx/devicecode": map[string]any{
-				"post": openAPIOperation(
-					[]string{"wxcode"},
-					"从本机 wxcode Xposed 服务取小程序 code（兼容入口）",
-					nil,
-					jsonRequestBody(refSchema("DeviceCodeRequest")),
-					defaulted(map[string]any{
-						"200": jsonResponse("设备直取 code 结果。", refSchema("DeviceCodeResponse")),
 					}),
 				),
 			},
@@ -485,23 +454,16 @@ func newOpenAPISpec() map[string]any {
 					"openid": map[string]any{"type": "string"},
 					"result": freeFormObjectSchema("wxapp 接口返回结果。"),
 				}),
-				"DeviceCodeRequest": objectSchema([]string{"app_id"}, map[string]any{
-					"app_id": map[string]any{"type": "string", "description": "小程序 appId。"},
-				}),
 				"FusionCodeRequest": objectSchema([]string{"app_id"}, map[string]any{
 					"app_id": map[string]any{"type": "string", "description": "小程序 appId。"},
-					"ref":    map[string]any{"type": "string", "description": "可选：原生 login_buffer 协议使用的账号 ref；缺省时设备 Hook 优先。"},
-					"prefer": map[string]any{"type": "string", "enum": []string{"device", "native"}, "description": "可选：显式指定优先来源。"},
+					"ref":    map[string]any{"type": "string", "description": "可选：原生 login_buffer 协议使用的账号 ref；缺省时取默认账号。"},
+					"prefer": map[string]any{"type": "string", "enum": []string{"native"}, "description": "可选：v11 起只支持 native。"},
 				}),
 				"FusionCodeResponse": objectSchema([]string{"source", "fallback", "result"}, map[string]any{
-					"source":   map[string]any{"type": "string", "enum": []string{"device", "native"}, "description": "实际取码来源。"},
-					"fallback": map[string]any{"type": "boolean", "description": "是否发生了来源兜底切换。"},
-					"openid":   map[string]any{"type": "string", "description": "原生协议来源时的账号 openid。"},
+					"source":   map[string]any{"type": "string", "enum": []string{"native"}, "description": "实际取码来源（v11 起固定 native）。"},
+					"fallback": map[string]any{"type": "boolean", "description": "兼容字段，恒为 false。"},
+					"openid":   map[string]any{"type": "string", "description": "取码所用账号 openid。"},
 					"result":   freeFormObjectSchema("取码结果，含 code 等字段。"),
-				}),
-				"DeviceCodeResponse": objectSchema([]string{"source", "result"}, map[string]any{
-					"source": map[string]any{"type": "string", "description": "固定为 device。"},
-					"result": freeFormObjectSchema("设备直取结果，含 code、codeType、codeLength、status 等。"),
 				}),
 				"QingLongStatus": objectSchema([]string{"configured", "connected"}, map[string]any{
 					"configured": map[string]any{"type": "boolean"},

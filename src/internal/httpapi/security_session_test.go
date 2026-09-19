@@ -228,22 +228,3 @@ func TestDefaultAccountForSessionStaysWithinOwnScope(t *testing.T) {
 		t.Fatalf("令牌通道 defaultAccountFor error = %v", err)
 	}
 }
-
-// 设备侧接口（写全局 hook 端口表）只接受令牌或管理员会话。
-func TestDeviceHookEndpointsRequireTokenOrAdmin(t *testing.T) {
-	f := newConsoleFixture(t)
-	path := "/wxcode/register?port=8089&userId=0&version=8.0.76"
-
-	if rec := serveWithHeaders(t, f.handler, http.MethodGet, path, "", nil, nil); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("匿名 status = %d, want 401", rec.Code)
-	}
-	if rec := serveWithHeaders(t, f.handler, http.MethodGet, path, "", nil, f.aliceCookie); rec.Code != http.StatusForbidden {
-		t.Fatalf("普通用户会话 status = %d, want 403（不得篡改全局取码源）(body=%s)", rec.Code, rec.Body.String())
-	}
-	if rec := serveWithHeaders(t, f.handler, http.MethodGet, path, "", nil, f.adminCookie); rec.Code != http.StatusOK {
-		t.Fatalf("管理员会话 status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
-	}
-	if rec := serveWithHeaders(t, f.handler, http.MethodGet, path, "", map[string]string{"X-API-Token": testAPIToken}, nil); rec.Code != http.StatusOK {
-		t.Fatalf("令牌 status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
-	}
-}

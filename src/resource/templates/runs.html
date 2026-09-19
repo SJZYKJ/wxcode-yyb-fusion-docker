@@ -8,18 +8,18 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: oklch(1 0 0); --bg-soft: oklch(0.974 0.004 250); --surface: oklch(0.986 0.004 250);
-      --surface-strong: oklch(0.948 0.009 250); --ink: oklch(0.19 0.025 252); --muted: oklch(0.43 0.025 252);
-      --faint: oklch(0.58 0.018 252); --line: oklch(0.885 0.012 250); --primary: oklch(0.54 0.205 3);
-      --primary-hover: oklch(0.48 0.195 3); --accent: oklch(0.44 0.112 190); --accent-soft: oklch(0.94 0.027 190);
-      --success: oklch(0.55 0.135 145); --warning-soft: oklch(0.955 0.04 78); --danger: oklch(0.55 0.18 25);
-      --code-bg: oklch(0.16 0.022 252); --code-ink: oklch(0.96 0.006 250); --radius: 8px;
+      --bg: oklch(1 0 0); --bg-soft: oklch(0.973 0.008 285); --surface: oklch(0.985 0.005 285);
+      --surface-strong: oklch(0.946 0.012 285); --ink: oklch(0.2 0.03 280); --muted: oklch(0.44 0.03 280);
+      --faint: oklch(0.58 0.02 280); --line: oklch(0.89 0.015 285); --primary: oklch(0.52 0.2 280);
+      --primary-hover: oklch(0.46 0.19 280); --accent: oklch(0.5 0.11 210); --accent-soft: oklch(0.94 0.03 210);
+      --success: oklch(0.55 0.135 150); --warning-soft: oklch(0.955 0.04 78); --danger: oklch(0.55 0.18 25);
+      --code-bg: oklch(0.17 0.035 280); --code-ink: oklch(0.96 0.006 280); --radius: 12px;
     }
     * { box-sizing: border-box; }
     body { min-height: 100vh; margin: 0; background: var(--bg-soft); color: var(--ink); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
     button, input, select { font: inherit; } button { cursor: pointer; } [hidden] { display: none !important; }
     .topbar { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 28px; background: var(--bg); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
-    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; } .mark { width: 36px; height: 36px; border-radius: var(--radius); display: grid; place-items: center; background: var(--ink); color: var(--bg); font-weight: 800; flex: 0 0 auto; }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; } .mark { width: 36px; height: 36px; border-radius: var(--radius); display: grid; place-items: center; background: linear-gradient(135deg, oklch(0.55 0.2 280), oklch(0.45 0.19 300)); color: white; font-weight: 800; flex: 0 0 auto; }
     .brand h1 { margin: 0; font-size: 18px; line-height: 1.1; letter-spacing: 0; } .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
     .nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .nav a, .btn { min-height: 36px; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; background: var(--bg); color: var(--ink); text-decoration: none; transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }

@@ -1,6 +1,6 @@
-# wxcode + YYB Go 融合网关
+# YYB Go 融合网关
 
-**单容器跑通微信小程序取码**：浏览器扫码登录 → 青龙脚本取 code。无需 root 手机、无需 Android 容器、无需 Xposed。
+**单容器跑通微信小程序取码**：浏览器扫码登录 → 青龙脚本取 code。无需 root 手机、无需 Android 容器、无需 Xposed（v11 起安卓设备 Hook 取码已整体移除）。
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/chungg/wxcode-yyb-fusion)](https://hub.docker.com/r/chungg/wxcode-yyb-fusion)
 [![Image Size](https://img.shields.io/docker/image-size/chungg/wxcode-yyb-fusion/latest)](https://hub.docker.com/r/chungg/wxcode-yyb-fusion/tags)
@@ -119,10 +119,9 @@ docker compose up -d
 
 | 通道 | 原理 | 依赖 | 默认 |
 |---|---|---|---|
-| **原生扫码登录** | 浏览器 `/scan` 出二维码 → 手机微信扫码 → 登录态自动保存并刷新 | 无（纯 Docker） | ✅ 开启 |
-| wxcode 设备 | 已 root 手机装 wxcode APK，由 Xposed hook 微信进程取码 | root 手机 + LSPosed | 可选 |
+| **原生扫码登录** | 浏览器 `/scan` 出二维码 → 手机微信扫码 → 登录态自动保存并刷新 | 无（纯 Docker） | ✅ 唯一通道 |
 
-yyb-go 原生扫码已覆盖全部取码需求，**裸 Docker 就能跑**；wxcode 只是给有条件的人多一个设备端点（设备 hook 是 Android 组件，无法编译进 Linux 的 Go 服务，见 [详细文档](README-DOCKER.md) 第一节）。
+yyb-go 原生扫码已覆盖全部取码需求，**裸 Docker 就能跑**。旧版的安卓设备 Hook 取码（wxcode APK / Xposed / Zygisk，`/wxcode/*` 等设备端点）已在 v11 整体移除，见 [详细文档](README-DOCKER.md) 第一节。
 
 ---
 
@@ -130,9 +129,11 @@ yyb-go 原生扫码已覆盖全部取码需求，**裸 Docker 就能跑**；wxco
 
 | 文档 | 内容 |
 |---|---|
-| [README-DOCKER.md](README-DOCKER.md) | 完整部署文档：目录结构、取码接口、多用户账号隔离（v4.2.2）、访问令牌细节（v4.2.3）、wxcode 设备接入、FAQ |
+| [README-DOCKER.md](README-DOCKER.md) | 完整部署文档：目录结构、取码接口、多用户账号隔离（v4.2.2）、访问令牌细节（v4.2.3）、FAQ |
 
 **版本摘要**
+
+- **v11** **账号隔离真正落地 + 界面整体焕新 + 安卓支持下线**：修复「点运行一个账号却跑了全部」—— 三个取码脚本与 `code脚本/` 公共模块按任务前命令里的 `WECHAT_OPENIDS` 过滤账号，**手动运行只跑选中的那一个账号、定时只跑登录账号名下的账号**，白名单无匹配账号时空跑结束、绝不回退跑全部。安卓手机端（wxcode APK / Xposed Hook / Zygisk）取码支持与相关接口（`/wxcode/*`、`/whoami`、`/wxapp/deviceCode`）整体移除，只保留 Docker 部署与原生扫码协议。登录页与功能页视觉全面重做（靛蓝新主题），普通用户界面不再出现任何管理入口，用户管理页仅管理员可访问。
 
 - **v10** 账号隔离拆成两档：**「运行」只跑你选中的那一个 code 账号**，**「定时」按网关登录账号隔离 —— 跑该登录账号名下的全部 code 账号**（同一脚本只建一条定时任务，不会重复执行）。另外新增「脚本目录可见范围」：管理员可以指定非管理员账号只能看到青龙里哪些文件夹下的脚本，看不到的脚本既不会列出、也不能运行或开定时。老版本遗留的「每个 code 账号一条、还启用着」的定时任务，会在打开「账号运行管理」时自动收敛成一条登录账号级任务（只停旧的、不删）。
 - **v9** 修复「运行账号」越界：在网关上点运行，脚本不再去枚举网关里的**全部**微信账号，而是**只跑所选的那一个** —— 网关创建的账号任务会把任务前命令里的 `WECHAT_OPENIDS` 覆写成本账号（此前只写了 `YYB_SERVER`，而脚本池里的脚本并不读它，所以点一次运行会把所有账号都跑一遍）。旧的托管任务在你下次点「运行」或拨动定时开关时会自动带上这个限定。**在青龙里直接运行同一个脚本不受影响**，仍按青龙的全局 `WECHAT_OPENIDS` 取账号（写 `ALL` 即全部账号）。

@@ -22,7 +22,6 @@ import (
 	"yyb_go/internal/protocol"
 	"yyb_go/internal/qr"
 	"yyb_go/internal/store"
-	"yyb_go/internal/wxcode"
 )
 
 type Config struct {
@@ -48,11 +47,6 @@ type Config struct {
 	AdminPassword     string
 	CookieSecure      bool
 	SessionDuration   time.Duration
-	WXCodeURLs        []string
-	WXCodeTimeout     time.Duration
-	WXCodeHookPort    int
-	WXCodeMappingFile string
-	WXCodeRegisterTTL time.Duration
 	// APIToken 保护所有"无需浏览器会话即可访问"的取码接口。
 	// 启动时由 resolveAPIToken 解析（security.go），结果始终非空——
 	// 未配置 YYB_API_TOKEN 会自动生成并落库，重启后不变。
@@ -82,9 +76,7 @@ type App struct {
 	qinglong           *qingLongClient
 	auth               *auth.Store
 
-	wxcode        *wxcode.Client
 	hookMu        sync.Mutex
-	hookInstances map[int]hookInstance // userId -> registered hook instance
 	mu            sync.Mutex
 	qrSessions    map[string]*qr.Session
 	quickSessions map[string]quickLoginSession
@@ -131,12 +123,6 @@ func NewApp(cfg Config) (*App, error) {
 	if cfg.SessionDuration <= 0 {
 		cfg.SessionDuration = 7 * 24 * time.Hour
 	}
-	if cfg.WXCodeTimeout <= 0 {
-		cfg.WXCodeTimeout = 40 * time.Second
-	}
-	if cfg.WXCodeRegisterTTL <= 0 {
-		cfg.WXCodeRegisterTTL = 90 * time.Second
-	}
 	res, err := ensureResources(cfg.ResourceRoot)
 	if err != nil {
 		return nil, err
@@ -180,8 +166,6 @@ func NewApp(cfg Config) (*App, error) {
 		exchangeAuthCode:   qrClient.GetLoginBufferFromCode,
 		fetchUserInfo:      qrClient.LoginBuffers().FetchUserInfo,
 		qinglong:           newQingLongClient(cfg.QingLongType, cfg.QingLongURL, cfg.QingLongClientID, cfg.QingLongSecret, cfg.RequestTimeout),
-		wxcode:             wxcode.NewClient(cfg.WXCodeURLs, cfg.WXCodeTimeout),
-		hookInstances:      map[int]hookInstance{},
 		qrSessions:         map[string]*qr.Session{},
 		quickSessions:      map[string]quickLoginSession{},
 		loginAttempts:      map[string]loginAttempt{},
@@ -266,20 +250,8 @@ func (a *App) Handler() http.Handler {
 	router.Any("/login", a.requireAPIToken(consoleLoginRequest), gin.WrapF(a.handleUnifiedLogin))
 
 	api := router.Group("/", a.requireAPIToken())
-	// wxcode-compatible endpoints so existing wxcode clients work
-	// unchanged against the fused gateway (wire format identical to the
-	// original on-device NanoHTTPD service).
-	api.Any("/whoami", gin.WrapF(a.handleWXCompatWhoami))
+	// wxcode 兼容取码接口：脚本与自动化客户端按原线格式访问融合网关。
 	api.Any("/instances", gin.WrapF(a.handleWXCompatInstances))
-	// 设备 hook 的引导配置与心跳注册用更严格的中间件：注册接口会写全局
-	// hookInstances，而 deviceEndpoints() 会把注册进来的端口拼成
-	// http://127.0.0.1:<port> 供取码链路请求——放开就等于对外开放了
-	// 一个 SSRF/取码源劫持点。故只接受 API 令牌或管理员会话，
-	// 普通用户的浏览器会话同样会被拒。
-	device := router.Group("/", a.requireTokenOrAdminSession())
-	device.Any("/wxcode/hookcfg", gin.WrapF(a.handleHookCfg))
-	device.Any("/wxcode/config", gin.WrapF(a.handleHookCfg))
-	device.Any("/wxcode/register", gin.WrapF(a.handleWXCodeRegister))
 	api.Any("/wx/oauth", gin.WrapF(a.handlePublicOAuth))
 	api.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
 	api.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))
@@ -294,8 +266,6 @@ func (a *App) Handler() http.Handler {
 	api.Any("/wx/mpgeta8key", gin.WrapF(a.handleWXMPGetA8Key))
 	api.Any("/wx/appmsgext", gin.WrapF(a.handleWXAppMsgExt))
 	api.Any("/wx/appmsglike", gin.WrapF(a.handleWXAppMsgLike))
-	api.Any("/wxapp/deviceCode", gin.WrapF(a.handleDeviceGetCode))
-	api.Any("/wx/devicecode", gin.WrapF(a.handleDeviceGetCode))
 	api.Any("/openapi.json", gin.WrapF(a.handleOpenAPI))
 
 	// ---- 以下需要浏览器会话 ----
@@ -309,7 +279,6 @@ func (a *App) Handler() http.Handler {
 	router.Any("/api/auth/profile", gin.WrapF(a.handleProfile))
 	router.Any("/api/auth/password", gin.WrapF(a.handlePassword))
 	router.Any("/api/auth/sessions", gin.WrapF(a.handleSessions))
-	router.Any("/api/wxcode/status", gin.WrapF(a.handleWXCodeStatus))
 	router.Any("/", gin.WrapF(a.handleIndex))
 	router.Any("/scan", gin.WrapF(a.handleScan))
 	router.Any("/runs", gin.WrapF(a.handleRuns))
@@ -646,49 +615,14 @@ func (a *App) handleGetCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "app_id is required")
 		return
 	}
-	// Auto source selection: with a ref the native login_buffer protocol is
-	// primary; without one the on-device WeChat hook is primary. Each path
-	// transparently falls back to the other source on failure.
-	var (
-		result   map[string]any
-		openid   string
-		source   string
-		fallback bool
-	)
-	if body.Ref != "" {
-		acc, err := a.resolveReadableAccount(r, body.Ref)
-		if err != nil {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
-		nat, err := a.invokeWXApp(r.Context(), acc, body.AppID, body.Payload, a.invokeGetCode)
-		if err == nil {
-			result, openid, source, fallback = nat, acc.OpenID, "native", false
-		} else {
-			primaryErr := err
-			if dev, devErr := a.deviceCodeResult(r.Context(), body.AppID); devErr == nil {
-				result, source, fallback = dev, "device", true
-			} else {
-				writeNativeCallError(w, primaryErr)
-				return
-			}
-		}
-	} else {
-		dev, err := a.deviceCodeResult(r.Context(), body.AppID)
-		if err == nil {
-			result, source, fallback = dev, "device", false
-		} else {
-			primaryErr := err
-			if nat, oid, natErr := a.nativeCodeWithRef(r, "", body.AppID); natErr == nil {
-				result, openid, source, fallback = nat, oid, "native", true
-			} else {
-				writeError(w, http.StatusBadGateway, "device failed: "+primaryErr.Error()+"; native failed: "+natErr.Error())
-				return
-			}
-		}
+	// v11 起只有原生扫码（login_buffer）协议：带 ref 指定账号，不带 ref 取默认账号。
+	nat, oid, err := a.nativeCodeWithRef(r, body.Ref, body.AppID)
+	if err != nil {
+		writeNativeCallError(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"openid": openid, "source": source, "fallback": fallback, "result": result,
+		"openid": oid, "source": "native", "fallback": false, "result": nat,
 	})
 }
 
@@ -700,7 +634,14 @@ func (a *App) handleWXCodeAlias(w http.ResponseWriter, r *http.Request) {
 // login_buffer path for /wxapp/getCode callers.
 func writeNativeCallError(w http.ResponseWriter, err error) {
 	var expired accountExpiredError
+	var denied accountAccessDeniedError
 	switch {
+	case errors.As(err, &denied):
+		if strings.Contains(denied.msg, "not found") {
+			writeError(w, http.StatusNotFound, denied.msg)
+		} else {
+			writeError(w, http.StatusForbidden, denied.msg)
+		}
 	case errors.Is(err, sql.ErrNoRows):
 		writeError(w, http.StatusNotFound, "account not found")
 	case errors.As(err, &expired):
@@ -749,76 +690,6 @@ func (a *App) handleWXAppMsgExt(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleWXAppMsgLike(w http.ResponseWriter, r *http.Request) {
 	a.handleNamedWXOperation(w, r, "/wx/appmsglike", "appmsglike", true)
-}
-
-// handleDeviceGetCode obtains a wx.login code from the on-device wxcode
-// Xposed service (WXCODE_URLS, default http://127.0.0.1:8088) instead of the
-// server-side login_buffer protocol. Accepts POST JSON {"app_id": "..."} or
-// GET /wxapp/deviceCode?app_id=... and returns the same envelope shape as
-// /wxapp/getCode so existing automation scripts can switch sources by only
-// changing the endpoint.
-func (a *App) handleDeviceGetCode(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	if path != "/wxapp/deviceCode" && path != "/wx/devicecode" {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var body struct {
-		AppID string `json:"app_id"`
-	}
-	if r.Method == http.MethodPost {
-		if err := decodeOptionalJSON(r, &body); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-			return
-		}
-	} else {
-		body.AppID = r.URL.Query().Get("app_id")
-	}
-	body.AppID = strings.TrimSpace(body.AppID)
-	if body.AppID == "" {
-		writeError(w, http.StatusBadRequest, "app_id is required")
-		return
-	}
-	if a.wxcode == nil || !a.wxcode.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "no wxcode device endpoints configured (set WXCODE_URLS)")
-		return
-	}
-	result, err := a.wxcode.GetCode(r.Context(), body.AppID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "device code source failed: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"source": "device",
-		"result": map[string]any{
-			"appId":      result.AppID,
-			"status":     result.Status,
-			"code":       result.Code,
-			"codeType":   result.CodeType,
-			"codeLength": result.CodeLength,
-		},
-	})
-}
-
-// handleWXCodeStatus reports the health of every configured wxcode device
-// endpoint for the console status widget.
-func (a *App) handleWXCodeStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if a.wxcode == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "endpoints": []any{}})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":   a.wxcode.Enabled(),
-		"endpoints": a.wxcode.Status(r.Context()),
-	})
 }
 
 // handleNamedWXOperation adapts named /wx/* compatibility calls to the

@@ -18,7 +18,7 @@ import (
 const apiTokenHeader = "X-API-Token"
 
 // requireAPIToken 保护"无需浏览器会话即可访问"的取码类接口
-// （/login 取码分支、/instances、/whoami、/wxapp/*、/wx/*、/wxcode/*、/openapi.json）。
+// （/login 取码分支、/instances、/wxapp/*、/wx/*、/openapi.json）。
 //
 // fail-closed：令牌始终非空。App.cfg.APIToken 由 security.go 的
 // resolveAPIToken 在启动时解析——显式配置优先，其次复用数据库里自动生成的
@@ -174,39 +174,3 @@ func (a *App) browserSessionUser(c *gin.Context) (*auth.User, bool) {
 	return user, true
 }
 
-// requireTokenOrAdminSession 保护设备侧引导/注册类接口
-// （/wxcode/hookcfg、/wxcode/config、/wxcode/register）。
-//
-// 这些接口写的是全局 hook 实例表，其中的端口会被 deviceEndpoints() 拼成
-// http://127.0.0.1:<port> 交给取码链路，属于服务器级配置。因此只允许：
-//   - 携带 API 令牌的调用方（安卓 hook 客户端、自动化脚本）；
-//   - 管理员会话（方便在浏览器控制台里调试验证）。
-//
-// 普通用户的会话一律拒绝，避免任意登录账号篡改他人的取码源。
-func (a *App) requireTokenOrAdminSession() gin.HandlerFunc {
-	expected := strings.TrimSpace(a.cfg.APIToken)
-	return func(c *gin.Context) {
-		if expected != "" && apiTokenMatches(c.Request, expected) {
-			c.Next()
-			return
-		}
-		if user, ok := a.browserSessionUser(c); ok {
-			if user.Role == "admin" {
-				c.Next()
-				return
-			}
-			// 已登录但只是普通账号：明确属于权限不足。
-			writeError(c.Writer, http.StatusForbidden, "该接口需要 API 令牌或管理员权限")
-			c.Abort()
-			return
-		}
-		// YYB_ALLOW_NO_AUTH=true：整体不设鉴权，等同本机管理员。
-		if expected == "" {
-			c.Next()
-			return
-		}
-		// 既无令牌也无会话：属于未认证。
-		writeError(c.Writer, http.StatusUnauthorized, "该接口需要 API 令牌")
-		c.Abort()
-	}
-}

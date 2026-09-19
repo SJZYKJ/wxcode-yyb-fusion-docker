@@ -78,7 +78,7 @@ func TestAPITokenAllowNoAuthKeepsLegacyBehaviour(t *testing.T) {
 	t.Cleanup(func() { app.Close() })
 	handler := app.Handler()
 
-	for _, path := range []string{"/instances", "/whoami"} {
+	for _, path := range []string{"/instances"} {
 		rec := serveJSON(t, handler, http.MethodGet, path, "", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("AllowNoAuth: GET %s status = %d, want 200 (body=%s)", path, rec.Code, rec.Body.String())
@@ -116,7 +116,6 @@ func TestAPITokenProtectsPublicEndpoints(t *testing.T) {
 		{"Authorization 裸令牌", "/instances", map[string]string{"Authorization": testAPIToken}},
 		{"X-API-Token", "/instances", map[string]string{"X-API-Token": testAPIToken}},
 		{"查询参数", "/instances?token=" + testAPIToken, nil},
-		{"/whoami 带令牌", "/whoami", map[string]string{"Authorization": "Bearer " + testAPIToken}},
 		{"/openapi.json 带令牌", "/openapi.json", map[string]string{"Authorization": "Bearer " + testAPIToken}},
 	}
 	for _, tc := range cases {
@@ -128,7 +127,7 @@ func TestAPITokenProtectsPublicEndpoints(t *testing.T) {
 	}
 }
 
-func TestAPITokenKeepsHealthAndDeviceRoutesOpen(t *testing.T) {
+func TestAPITokenKeepsHealthRouteOpen(t *testing.T) {
 	handler, _ := newAPITokenApp(t, testAPIToken)
 
 	// 健康检查必须无令牌可用，否则 Docker healthcheck 会一直失败。
@@ -187,7 +186,7 @@ func TestAPITokenAcceptsBrowserConsoleSession(t *testing.T) {
 
 	// 工作台「调用配置」在浏览器里带会话调用 /wxapp/*、/wx/code，
 	// 没有携带令牌，必须放行，否则 Web 界面会被自己的令牌拦住。
-	for _, path := range []string{"/instances", "/whoami", "/openapi.json"} {
+	for _, path := range []string{"/instances", "/openapi.json"} {
 		rec := serveJSON(t, handler, http.MethodGet, path, "", cookie)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("session cookie: GET %s status = %d, want 200 (body=%s)", path, rec.Code, rec.Body.String())

@@ -1,5 +1,5 @@
 # ============================================================
-# YYB Go 融合网关 (yyb-go + wxcode 双通道) - 纯 Docker 部署
+# YYB Go 网关 - 纯 Docker 部署
 #
 # 默认走「拉取预构建镜像」，一条命令即可启动：
 #     cp .env.example .env && docker compose up -d
@@ -10,10 +10,7 @@
 #   再 build —— 见 README-DOCKER.md「重新出镜像」。
 #
 # 架构：单服务 yyb-go 网关；微信扫码登录为原生能力（浏览器 /scan）
-#        wxcode 设备（已 root 手机上安装 wxcode_2.1.0.apk）为可选取码端点
-# 取码链路：
-#   原生: /scan 显示二维码 -> 手机微信扫码 -> login_buffer 自动刷新
-#   设备: WXCODE_URLS=http://<手机IP>:8088 -> wxcode NanoHTTPD -> 微信进程 hook
+# 取码链路：/scan 显示二维码 -> 手机微信扫码 -> login_buffer 自动刷新
 # 详情见 README-DOCKER.md
 # ============================================================
 name: wxcode-yyb-fusion-docker
@@ -37,10 +34,6 @@ services:
       - -keepalive-ahead
       - ${YYB_KEEPALIVE_AHEAD:-45m}
     environment:
-      # 可选取码端点：已 root 手机上安装 wxcode 后填 http://<手机IP>:8088
-      # 留空 = 仅使用原生微信扫码登录（推荐，无需手机模块）
-      WXCODE_URLS: ${WXCODE_URLS:-}
-      WXCODE_HOOK_PORT: ${WXCODE_HOOK_PORT:-8088}
       PANEL_TYPE: ${PANEL_TYPE:-qinglong}
       QL_URL: ${QL_URL:-}
       QL_CLIENT_ID: ${QL_CLIENT_ID:-}

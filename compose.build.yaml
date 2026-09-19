@@ -39,8 +39,6 @@ services:
       - -keepalive-ahead
       - ${YYB_KEEPALIVE_AHEAD:-45m}
     environment:
-      WXCODE_URLS: ${WXCODE_URLS:-}
-      WXCODE_HOOK_PORT: ${WXCODE_HOOK_PORT:-8088}
       PANEL_TYPE: ${PANEL_TYPE:-qinglong}
       QL_URL: ${QL_URL:-}
       QL_CLIENT_ID: ${QL_CLIENT_ID:-}

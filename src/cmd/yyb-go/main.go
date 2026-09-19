@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -79,17 +78,6 @@ func main() {
 		}
 	}
 
-	wxCodeURLs := splitListEnv(os.Getenv("WXCODE_URLS"))
-	if len(wxCodeURLs) == 0 {
-		wxCodeURLs = []string{"http://127.0.0.1:8089"}
-	}
-	wxCodeHookPort := 8089
-	if raw := strings.TrimSpace(os.Getenv("WXCODE_HOOK_PORT")); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed < 65536 {
-			wxCodeHookPort = parsed
-		}
-	}
-
 	cfg := httpapi.Config{
 		ResourceRoot:      *resourceRoot,
 		DBFilename:        *dbFilename,
@@ -112,10 +100,6 @@ func main() {
 		AdminUser:         getEnvWithFallback("YYB_ADMIN_USER", "YYB_WEB_USER"),
 		AdminPassword:     getEnvWithFallback("YYB_ADMIN_PASSWORD", "YYB_WEB_PASSWORD"),
 		CookieSecure:      os.Getenv("YYB_COOKIE_SECURE") == "true",
-		WXCodeURLs:        wxCodeURLs,
-		WXCodeTimeout:     40 * time.Second,
-		WXCodeHookPort:    wxCodeHookPort,
-		WXCodeMappingFile: strings.TrimSpace(os.Getenv("WXCODE_MAPPING_FILE")),
 		APIToken:          strings.TrimSpace(os.Getenv("YYB_API_TOKEN")),
 		AllowNoAuth:       envBool("YYB_ALLOW_NO_AUTH"),
 		AllowRegistration: envBool("YYB_ALLOW_REGISTRATION"),

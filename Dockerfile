@@ -21,9 +21,6 @@ COPY gateway/yyb-go-${TARGETARCH} /app/yyb-go
 # Web 面板资源
 COPY gateway/resource /app/resource
 
-# wxcode APK 随镜像内置（可选：取出安装到已 root 手机作设备取码端点）
-COPY wxcode/wxcode_2.1.0.apk /app/wxcode/wxcode_2.1.0.apk
-
 # entrypoint 以 root 启动（修复 bind-mount 数据目录权限）后降权到 yyb 运行
 COPY entrypoint.sh /entrypoint.sh
 

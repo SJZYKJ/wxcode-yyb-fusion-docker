@@ -80,28 +80,6 @@ func TestAPITokenIsGeneratedWhenUnsetRatherThanOpen(t *testing.T) {
 	}
 }
 
-// 设备侧 hook 的引导配置与心跳注册必须和其它取码接口一样受令牌保护：
-// /wxcode/register 写入的端口会被 deviceEndpoints() 当作取码源去请求。
-func TestAPITokenProtectsDeviceHookEndpoints(t *testing.T) {
-	app := newSecurityApp(t, Config{AuthDriver: "sqlite", APIToken: testAPIToken})
-	handler := app.Handler()
-
-	for _, target := range []struct{ method, path string }{
-		{http.MethodGet, "/wxcode/hookcfg?v=8.0.76"},
-		{http.MethodGet, "/wxcode/config?v=8.0.76"},
-		{http.MethodGet, "/wxcode/register?port=8089&userId=0&version=8.0.76"},
-	} {
-		if rec := requestFrom(handler, target.method, target.path, "", localTestRemoteAddr, nil); rec.Code != http.StatusUnauthorized {
-			t.Fatalf("无令牌 %s %s status = %d, want 401", target.method, target.path, rec.Code)
-		}
-		rec := requestFrom(handler, target.method, target.path, "", localTestRemoteAddr,
-			map[string]string{"X-API-Token": testAPIToken})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("带令牌 %s %s status = %d, want 200 (body=%s)", target.method, target.path, rec.Code, rec.Body.String())
-		}
-	}
-}
-
 // YYB_ALLOW_NO_AUTH=true 是唯一的「关闭鉴权」方式，行为等同旧版本。
 func TestAPITokenAllowNoAuthOptOut(t *testing.T) {
 	app := newSecurityApp(t, Config{AuthDriver: "sqlite", AllowNoAuth: true})
@@ -109,7 +87,7 @@ func TestAPITokenAllowNoAuthOptOut(t *testing.T) {
 	if app.cfg.APIToken != "" {
 		t.Fatalf("AllowNoAuth 时令牌应为空，实际 %q", app.cfg.APIToken)
 	}
-	for _, path := range []string{"/instances", "/whoami", "/wxcode/register?port=8089&userId=0"} {
+	for _, path := range []string{"/instances"} {
 		if rec := requestFrom(handler, http.MethodGet, path, "", localTestRemoteAddr, nil); rec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d, want 200", path, rec.Code)
 		}

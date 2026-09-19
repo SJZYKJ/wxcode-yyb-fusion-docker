@@ -15,7 +15,6 @@ RUN apk add --no-cache ca-certificates wget su-exec \
 WORKDIR /app
 COPY --from=build /out/yyb-go /app/yyb-go
 COPY gateway/resource /app/resource
-COPY wxcode/wxcode_2.1.0.apk /app/wxcode/wxcode_2.1.0.apk
 COPY entrypoint.sh /entrypoint.sh
 RUN mkdir -p /app/resource/db /app/resource/avatars /app/resource/qr \
     && chown -R yyb:yyb /app && chmod 755 /app/yyb-go /entrypoint.sh
