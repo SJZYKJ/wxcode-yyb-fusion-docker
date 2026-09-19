@@ -344,6 +344,8 @@ func (a *App) Handler() http.Handler {
 	router.Any("/api/auth/users/*path", gin.WrapF(a.handleUserAction))
 	router.Any("/api/auth/registration", gin.WrapF(a.handleRegistrationSetting))
 	router.Any("/api/qinglong/config", gin.WrapF(a.handleQingLongConfig))
+	// 非管理员能看到的脚本目录（全局一份白名单；留空 = 不限制）
+	router.Any("/api/qinglong/script-visibility", gin.WrapF(a.handleScriptVisibility))
 	// Keep the shorter /wx/* names used by existing YYB clients. The handlers
 	// share the same session and retry logic as the canonical /wxapp/* routes.
 	router.NoRoute(func(c *gin.Context) {

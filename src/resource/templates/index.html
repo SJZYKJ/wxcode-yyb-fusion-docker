@@ -880,6 +880,20 @@
                 </div>
               </div>
             </details>
+            <details class="integration" id="scriptScopeSettings" hidden>
+              <summary>脚本目录可见范围（非管理员）</summary>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="scriptScopeDirs">放行的脚本目录</label>
+                  <textarea class="input" id="scriptScopeDirs" rows="4" placeholder="一行一个目录，例如：&#10;code脚本&#10;525815266_YYB-Go-Enhanced/scripts&#10;留空 = 不限制（所有目录都可见）"></textarea>
+                  <span class="field-note" id="scriptScopeNote">管理员不受此限制；被限制的账号既看不到、也不能运行或开定时的脚本。</span>
+                </div>
+                <div class="inline-actions">
+                  <button class="btn primary" id="saveScriptScopeBtn" type="button">保存可见范围</button>
+                  <button class="btn secondary" id="clearScriptScopeBtn" type="button">取消限制</button>
+                </div>
+              </div>
+            </details>
             <div class="log-line" id="activityLine">尚未执行操作</div>
           </div>
         </aside>
@@ -1194,6 +1208,7 @@
       // 普通用户看不到用户管理入口与面板服务器级配置
       $("usersEntry").hidden = !state.isAdmin;
       $("qingLongSettings").hidden = !state.isAdmin;
+      $("scriptScopeSettings").hidden = !state.isAdmin;
       return state.isAdmin;
     }
 
@@ -1231,6 +1246,36 @@
         $("qingLongSecretNote").textContent = config.configured ? "连接参数已保存；修改时会先测试连接" : "尚未配置；保存时会先测试连接";
       } catch (error) {
         setActivity(`读取面板配置失败：${error.message}`);
+      }
+    }
+
+    async function loadScriptScope() {
+      try {
+        const data = await api("GET", "/api/qinglong/script-visibility");
+        $("scriptScopeDirs").value = (data.dirs || []).join("\n");
+        const available = data.available_dirs || [];
+        $("scriptScopeNote").textContent = (data.restricted
+          ? "当前只放行这些目录；其余账号只能看到它们里面的脚本。"
+          : "当前不限制（留空即所有目录都可见）。")
+          + (available.length ? ` 青龙脚本目录里现有：${available.join("、")}` : " （暂时读不到青龙的脚本目录列表）");
+      } catch (error) {
+        setActivity(`读取脚本目录可见范围失败：${error.message}`);
+      }
+    }
+
+    async function saveScriptScope() {
+      const button = $("saveScriptScopeBtn");
+      button.disabled = true;
+      try {
+        const dirs = $("scriptScopeDirs").value.split(/[\n,，;]/).map(item => item.trim()).filter(Boolean);
+        const data = await api("PUT", "/api/qinglong/script-visibility", { dirs });
+        $("scriptScopeDirs").value = (data.dirs || []).join("\n");
+        setActivity(data.restricted ? `已限制非管理员只能看到：${(data.dirs || []).join("、")}` : "已取消脚本目录限制");
+        await loadScriptScope();
+      } catch (error) {
+        setActivity(`保存脚本目录可见范围失败：${error.message}`);
+      } finally {
+        button.disabled = false;
       }
     }
 
@@ -1446,6 +1491,8 @@
     $("syncQingLongBtn").addEventListener("click", syncQingLong);
     $("deleteAccountBtn").addEventListener("click", deleteAccount);
     $("saveQingLongBtn").addEventListener("click", saveQingLongConfig);
+    $("saveScriptScopeBtn").addEventListener("click", saveScriptScope);
+    $("clearScriptScopeBtn").addEventListener("click", () => { $("scriptScopeDirs").value = ""; saveScriptScope(); });
     $("clearQingLongBtn").addEventListener("click", clearQingLongConfig);
     $("featureSel").addEventListener("change", togglePayload);
     $("callBtn").addEventListener("click", callFeature);
@@ -1465,7 +1512,7 @@
     loadMe().then(isAdmin => {
       loadAccounts();
       // 面板连接配置是服务器级设置，仅管理员可读
-      if (isAdmin) loadQingLongConfig();
+      if (isAdmin) { loadQingLongConfig(); loadScriptScope(); }
     });
     setInterval(loadHealth, 15000);
     setInterval(loadWxcodeStatus, 30000);

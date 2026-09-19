@@ -149,6 +149,13 @@ func TestRemarkUpdatesManagedNameAndSyncPreservesExistingEnv(t *testing.T) {
 	if enable.Code != http.StatusOK {
 		t.Fatalf("enable response = %d %s", enable.Code, enable.Body.String())
 	}
+	// 顺手跑一次，建出「只跑该账号」的手动任务 —— 备注更新作用在它上面。
+	run := apiRequest(t, handler, http.MethodPost, "/api/qinglong/jobs/run", map[string]any{
+		"ref": ref, "script_key": "MDHY.js",
+	})
+	if run.Code != http.StatusAccepted {
+		t.Fatalf("run response = %d %s", run.Code, run.Body.String())
+	}
 	remark := apiRequest(t, handler, http.MethodPut, "/accounts/remark", map[string]any{"ref": ref, "remark": " Boom "})
 	if remark.Code != http.StatusOK || !strings.Contains(remark.Body.String(), `"remark":"Boom"`) {
 		t.Fatalf("remark response = %d %s", remark.Code, remark.Body.String())
@@ -163,10 +170,13 @@ func TestRemarkUpdatesManagedNameAndSyncPreservesExistingEnv(t *testing.T) {
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	var managedName, value, remarks string
+	var value, remarks string
+	// 备注只进「只跑该账号」的手动任务名（定时任务是登录账号级的，挂的是脚本名）；
+	// 所以这里只看 LogName 以 yyb_account_ 开头的那条。
+	accountTaskNames := make([]string, 0)
 	for _, cron := range fake.crons {
-		if strings.HasPrefix(cron.Name, "[YYB:") {
-			managedName = cron.Name
+		if strings.HasPrefix(cron.LogName, "yyb_account_") {
+			accountTaskNames = append(accountTaskNames, cron.Name)
 		}
 	}
 	for _, env := range fake.envs {
@@ -174,8 +184,14 @@ func TestRemarkUpdatesManagedNameAndSyncPreservesExistingEnv(t *testing.T) {
 			value, remarks = env.Value, env.Remarks
 		}
 	}
-	if !strings.Contains(managedName, "] Boom · ") {
-		t.Fatalf("managed task name = %q", managedName)
+	renamed := false
+	for _, name := range accountTaskNames {
+		if strings.Contains(name, "] Boom · ") {
+			renamed = true
+		}
+	}
+	if !renamed {
+		t.Fatalf("账号级任务名没有跟着备注更新: %v", accountTaskNames)
 	}
 	wantLine := "yyb-go:8000@" + ref
 	if strings.Count(value, wantLine) != 1 || !strings.Contains(value, "manual-line") || !strings.Contains(value, "yyb-go:8000@8") {

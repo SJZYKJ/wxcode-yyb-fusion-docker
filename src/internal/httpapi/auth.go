@@ -545,7 +545,7 @@ const (
 	loginAttemptsMax = 4096
 )
 
-func loginIPKey(ip string) string    { return "ip:" + strings.TrimSpace(ip) }
+func loginIPKey(ip string) string     { return "ip:" + strings.TrimSpace(ip) }
 func loginUserKey(name string) string { return "user:" + strings.ToLower(strings.TrimSpace(name)) }
 
 func (a *App) allowLogin(username, ip string) bool {

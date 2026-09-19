@@ -215,7 +215,6 @@ func TestHookMappingSelection(t *testing.T) {
 	}
 }
 
-
 // ---- wxcode compatibility layer tests ----
 
 func TestUnifiedLoginGetFallsBackToNative(t *testing.T) {
@@ -350,7 +349,7 @@ func TestWXCodeRegisterDualApp(t *testing.T) {
 			t.Fatalf("register status = %d, body = %s", rec.Code, rec.Body.String())
 		}
 	}
-	register(18089, 0) // main WeChat
+	register(18089, 0)  // main WeChat
 	register(18099, 10) // dual-app clone
 
 	eps := app.deviceEndpoints()
@@ -389,8 +388,6 @@ func TestWXCodeRegisterDualApp(t *testing.T) {
 		t.Fatalf("instances missing userId 0/10: %s", rec.Body.String())
 	}
 }
-
-
 
 func TestDefaultAccount(t *testing.T) {
 	app := newFusionApp(t, "http://127.0.0.1:1")

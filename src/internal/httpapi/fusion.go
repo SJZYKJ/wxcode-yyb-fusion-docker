@@ -141,14 +141,14 @@ func (a *App) handleWXCompatWhoami(w http.ResponseWriter, r *http.Request) {
 		port = 8089
 	}
 	writeRawJSON(w, http.StatusOK, map[string]any{
-		"packageName": "com.tencent.mm",
-		"userId":      0,
-		"port":        port,
-		"version":     "8.0.76",
-		"j1":          entry.J1,
-		"c":           entry.C,
-		"a1":          "com.tencent.mm." + entry.A1,
-		"a7":          "com.tencent.mm." + entry.A7,
+		"packageName":      "com.tencent.mm",
+		"userId":           0,
+		"port":             port,
+		"version":          "8.0.76",
+		"j1":               entry.J1,
+		"c":                entry.C,
+		"a1":               "com.tencent.mm." + entry.A1,
+		"a7":               "com.tencent.mm." + entry.A7,
 		"j1StaticMethod":   entry.J1Static,
 		"j1InstanceMethod": entry.J1Instance,
 	})
@@ -507,14 +507,15 @@ func (a *App) handleHookCfg(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "j1_instance %s\n", entry.J1Instance)
 	fmt.Fprintf(w, "matched %s\n", strconv.Itoa(matchedInt))
 }
+
 // ---------- on-device hook registration (dual-app support) ----------
 
 // hookInstance describes an on-device wxcode hook (a WeChat process injected
 // by the Zygisk module) that registered itself with the fused gateway.
 type hookInstance struct {
-	UserID  int
-	Port    int
-	Version string
+	UserID   int
+	Port     int
+	Version  string
 	LastSeen time.Time
 }
 

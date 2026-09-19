@@ -464,6 +464,8 @@ type jobsPayload struct {
 	ScriptsTotal int    `json:"scripts_total"`
 	CronTotal    int    `json:"cron_total"`
 	Degraded     string `json:"degraded_note"`
+	ScopeCount   int    `json:"scope_count"`
+	Restricted   bool   `json:"restricted"`
 	Jobs         []struct {
 		ScriptKey        string `json:"script_key"`
 		Name             string `json:"name"`

@@ -70,6 +70,23 @@ CREATE TABLE IF NOT EXISTS account_script_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_account_script_jobs_account ON account_script_jobs(account_id);
 
+-- user_script_jobs 是「登录账号级」的定时任务：一个网关登录账号 + 一个脚本只建一条任务，
+-- 跑该登录账号名下的全部 code 账号（account_script_jobs 仍然保留，用来记录「手动运行」
+-- 用的单账号任务）。owner_user_id=0 表示账号没有归属（历史数据/未启用鉴权时创建），
+-- 统一按管理员名下处理。
+CREATE TABLE IF NOT EXISTS user_script_jobs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id     INTEGER NOT NULL,
+    script_key        TEXT    NOT NULL,
+    ql_cron_id        INTEGER NOT NULL,
+    schedule          TEXT    NOT NULL,
+    anchor_account_id INTEGER NOT NULL DEFAULT 0,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    UNIQUE(owner_user_id, script_key)
+);
+CREATE INDEX IF NOT EXISTS idx_user_script_jobs_owner ON user_script_jobs(owner_user_id);
+
 CREATE TABLE IF NOT EXISTS account_push_settings (
     account_id     INTEGER PRIMARY KEY REFERENCES wechat_accounts(id) ON DELETE CASCADE,
     channel        TEXT    NOT NULL DEFAULT 'none',
@@ -410,6 +427,28 @@ func (db *DB) ListAccountsOwnedBy(ctx context.Context, ownerUserID int64) ([]*We
 		out = append(out, acc)
 	}
 	return out, rows.Err()
+}
+
+// ListAccountsByOwnerKey 按「登录账号」取账号：ownerKey=0 表示未归属账号（owner_user_id 为空），
+// 其余按 owner_user_id 精确匹配。登录账号级定时任务用它算出要跑哪些 code 账号。
+func (db *DB) ListAccountsByOwnerKey(ctx context.Context, ownerKey int64) ([]*WechatAccount, error) {
+	if ownerKey <= 0 {
+		rows, err := db.sql.QueryContext(ctx, selectAccountSQL+" WHERE owner_user_id IS NULL ORDER BY id")
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []*WechatAccount
+		for rows.Next() {
+			acc, err := scanAccountRows(rows)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, acc)
+		}
+		return out, rows.Err()
+	}
+	return db.ListAccountsOwnedBy(ctx, ownerKey)
 }
 
 // ListAccountsVisibleTo 返回控制台可见账号：all=true（管理员/未启用鉴权）返回全部，

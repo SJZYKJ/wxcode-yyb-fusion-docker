@@ -198,23 +198,23 @@ func newOpenAPISpec() map[string]any {
 			},
 			"/api/qinglong/jobs": map[string]any{
 				"get": openAPIOperation(
-					[]string{"qinglong"}, "获取账号的兼容脚本任务",
+					[]string{"qinglong"}, "获取该账号所属登录账号的脚本任务列表（脚本池来自青龙脚本目录；非管理员只能看到管理员放行的目录）",
 					[]map[string]any{queryStringParam("ref", "账号 ID、UIN 或 openid。", true)}, nil,
 					defaulted(map[string]any{"200": jsonResponse("账号任务列表。", refSchema("AccountJobsResponse"))}),
 				),
 			},
 			"/api/qinglong/jobs/enable": map[string]any{
 				"put": openAPIOperation(
-					[]string{"qinglong"}, "启用或停用账号脚本定时任务（任务只跑该账号）", nil,
+					[]string{"qinglong"}, "启用或停用脚本定时任务：一个网关登录账号 + 一个脚本一条任务，跑该登录账号名下全部 code 账号", nil,
 					jsonRequestBody(refSchema("JobActionRequest")),
-					defaulted(map[string]any{"200": jsonResponse("任务开关结果。", freeFormObjectSchema("任务状态。"))}),
+					defaulted(map[string]any{"200": jsonResponse("任务开关结果。", freeFormObjectSchema("任务状态；scope_count 为该定时任务覆盖的 code 账号数。"))}),
 				),
 			},
 			"/api/qinglong/jobs/run": map[string]any{
 				"post": openAPIOperation(
-					[]string{"qinglong"}, "立即运行账号脚本一次（任务已限定为只跑该账号）", nil,
+					[]string{"qinglong"}, "立即运行账号脚本一次：只跑选中的这个 code 账号（与定时的「跑全部」区分开）", nil,
 					jsonRequestBody(refSchema("JobRunRequest")),
-					defaulted(map[string]any{"202": jsonResponse("任务已提交到青龙；任务前命令会把 WECHAT_OPENIDS 限定成本账号，不会跑其它账号。", freeFormObjectSchema("任务提交状态。"))}),
+					defaulted(map[string]any{"202": jsonResponse("任务已提交到青龙；任务前命令把 WECHAT_OPENIDS 限定成本账号，不会跑同一登录账号下的其它 code 账号。", freeFormObjectSchema("任务提交状态。"))}),
 				),
 			},
 			"/api/qinglong/jobs/log": map[string]any{
@@ -225,6 +225,17 @@ func newOpenAPISpec() map[string]any {
 						queryStringParam("script_key", "脚本相对青龙脚本目录的路径，如 code脚本/绿鼻子.js。", true),
 					}, nil,
 					defaulted(map[string]any{"200": jsonResponse("最近运行日志。", refSchema("JobLogResponse"))}),
+				),
+			},
+			"/api/qinglong/script-visibility": map[string]any{
+				"get": openAPIOperation(
+					[]string{"qinglong"}, "读取「脚本目录可见范围」设置（仅管理员）", nil, nil,
+					defaulted(map[string]any{"200": jsonResponse("dirs 为放行目录，restricted=false 表示不限制；available_dirs 是青龙脚本目录里现存的目录。", freeFormObjectSchema("可见范围设置。"))}),
+				),
+				"put": openAPIOperation(
+					[]string{"qinglong"}, "写入「脚本目录可见范围」设置（仅管理员；dirs 为空表示不限制）", nil,
+					freeFormObjectSchema("请求体：{\"dirs\":[\"code脚本\",\"525815266_YYB-Go-Enhanced/scripts\"]}。"),
+					defaulted(map[string]any{"200": jsonResponse("保存后的设置。", freeFormObjectSchema("可见范围设置。"))}),
 				),
 			},
 			"/api/qinglong/runs": map[string]any{
