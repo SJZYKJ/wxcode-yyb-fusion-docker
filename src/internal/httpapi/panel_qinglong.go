@@ -263,8 +263,12 @@ func (d *qingLongDriver) ListScripts(ctx context.Context) ([]qingLongScript, err
 		}
 	}
 
+	// 青龙新版本（>=2.x）的 /open/scripts/files 对「新建/空目录」经常返回空的
+	// children，甚至目录节点没有 children 字段，导致老逻辑把目录误当成叶子文件丢弃。
+	// 这里改为「主动递归」：对每个目录节点用 ?path=<dir> 单层拉取子内容，彻底绕开
+	// children 为空的坑。目录节点一律用 type=="directory" 识别，路径以 key 为准。
 	out := make([]qingLongScript, 0, len(nodes))
-	collectScriptFiles(nodes, "", &out)
+	d.collectScriptFilesRecursive(ctx, nodes, "", &out)
 	return out, nil
 }
 
@@ -272,21 +276,61 @@ type qingLongScriptNode struct {
 	Title    string               `json:"title"`
 	Value    string               `json:"value"`
 	Key      string               `json:"key"`
+	Type     string               `json:"type"`
 	Parent   string               `json:"parent"`
 	Children []qingLongScriptNode `json:"children"`
 }
 
-// 递归展开脚本目录树：带 children 的节点是目录，叶子节点才是脚本文件。
-func collectScriptFiles(nodes []qingLongScriptNode, parent string, out *[]qingLongScript) {
+// collectScriptFilesRecursive 递归展开脚本目录。
+//
+// 优先用 node.Key（青龙权威的相对路径）还原路径；只有拿不到 key 时才退回
+// value/title 再拼 parent。目录用 type=="directory" 或「有非空 children」双重识别，
+// 且即便 children 为空也会用 ?path= 再拉一次，确保新建目录里的脚本不漏。
+func (d *qingLongDriver) collectScriptFilesRecursive(ctx context.Context, nodes []qingLongScriptNode, parent string, out *[]qingLongScript) {
 	for _, node := range nodes {
-		if len(node.Children) > 0 {
-			collectScriptFiles(node.Children, scriptNodePath(node, parent), out)
+		path := scriptNodePath(node, parent)
+		if isScriptDirNode(node) {
+			// 目录：优先用已经递归在 children 里的内容；没有就主动按 path 拉一层。
+			children := node.Children
+			if len(children) == 0 && path != "" {
+				children = d.listScriptDir(ctx, path)
+			}
+			if len(children) > 0 {
+				d.collectScriptFilesRecursive(ctx, children, path, out)
+			}
 			continue
 		}
-		if path := scriptNodePath(node, parent); path != "" {
+		if path != "" {
 			*out = append(*out, newQingLongScript(path))
 		}
 	}
+}
+
+// isScriptDirNode 判断节点是不是目录：青龙新版用 type=="directory"；老版本靠非空
+// children。二者任一成立都按目录处理，避免空目录/新目录被当成文件丢弃。
+func isScriptDirNode(node qingLongScriptNode) bool {
+	if node.Type == "directory" || node.Type == "dir" {
+		return true
+	}
+	return len(node.Children) > 0
+}
+
+// listScriptDir 用 ?path= 单层拉取某个目录下的内容，拿不到就返回空（不报错，
+// 保持降级链路稳定——上层还有 ListCrons 反推兜底）。
+func (d *qingLongDriver) listScriptDir(ctx context.Context, dir string) []qingLongScriptNode {
+	var raw json.RawMessage
+	query := "/open/scripts/files?path=" + url.QueryEscape(dir)
+	if err := d.request(ctx, http.MethodGet, query, nil, &raw); err != nil {
+		return nil
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var nodes []qingLongScriptNode
+	if err := json.Unmarshal(raw, &nodes); err != nil {
+		return nil
+	}
+	return nodes
 }
 
 // 从节点里还原出「相对脚本根目录的路径」。
