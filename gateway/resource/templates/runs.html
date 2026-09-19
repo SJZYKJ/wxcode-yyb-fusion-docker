@@ -49,7 +49,7 @@
     .tab:hover { background: var(--surface-strong); color: var(--ink); } .tab[aria-selected="true"] { background: var(--bg); color: var(--primary); font-weight: 700; box-shadow: inset 0 -2px var(--primary); }
     .panel { margin-top: 16px; } .panel-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .toolbar { display: flex; align-items: center; gap: 8px; } .toolbar input { width: min(310px, 42vw); } .toolbar select { width: min(190px, 30vw); }
-    .notice { margin-top: 14px; padding: 10px 12px; border: 1px solid oklch(0.86 0.06 78); border-radius: var(--radius); background: var(--warning-soft); color: oklch(0.36 0.07 72); } .notice strong { color: var(--ink); }
+    .notice { margin-top: 14px; padding: 10px 12px; border: 1px solid oklch(0.86 0.06 78); border-radius: var(--radius); background: var(--warning-soft); color: oklch(0.36 0.07 72); } .notice strong { color: var(--ink); } .notice.info { border-color: oklch(0.84 0.04 190); background: var(--accent-soft); color: oklch(0.32 0.08 190); }
     .run-scope { padding: 12px 14px; background: var(--accent-soft); border: 1px solid oklch(0.84 0.04 190); border-radius: var(--radius); } .run-scope strong { color: oklch(0.32 0.08 190); }
     .table-wrap { margin: 14px -18px -18px; overflow-x: auto; } table { width: 100%; border-collapse: collapse; min-width: 860px; }
     th, td { padding: 11px 14px; border-top: 1px solid var(--line); text-align: left; vertical-align: middle; } th { background: var(--surface); color: var(--muted); font-size: 12px; white-space: nowrap; }
@@ -110,6 +110,7 @@
             <div class="toolbar"><select id="taskDirSelect" aria-label="按目录筛选脚本" title="只看某个目录里的脚本"><option value="">全部目录</option></select><input id="taskSearchInput" type="search" placeholder="搜索脚本名称或路径" aria-label="搜索任务脚本"><button class="btn" type="button" id="clearTaskSearchBtn" hidden>清除</button></div>
           </div>
           <div class="notice" id="duplicateNotice" hidden><strong>检测到旧全局任务仍启用。</strong> 同一脚本可能被全局任务和账号任务重复执行，请先在青龙中停用对应全局任务。</div>
+          <div class="notice info"><strong>运行范围：</strong>网关上点「运行账号」只跑当前选中的账号 —— 网关建的任务会把任务前命令里的 <code>WECHAT_OPENIDS</code> 覆写成本账号；在青龙里直接运行同一个脚本不受影响，仍按青龙的全局 <code>WECHAT_OPENIDS</code> 取账号（写 <code>ALL</code> 就是全部账号）。</div>
           <div class="table-wrap"><table><thead><tr><th>脚本</th><th>Cron</th><th>任务状态</th><th>最近运行</th><th>定时开关</th><th>操作</th></tr></thead><tbody id="jobsBody"><tr><td class="name"><div class="skeleton"></div></td><td><div class="skeleton"></div></td><td><div class="skeleton"></div></td><td><div class="skeleton"></div></td><td><div class="skeleton"></div></td><td><div class="skeleton"></div></td></tr></tbody></table><div class="empty" id="jobsEmpty" hidden><p id="jobsEmptyText">该账号尚未配置脚本任务。</p><button class="btn" type="button" id="browseBtn">浏览全部脚本</button></div></div>
         </div>
         <div class="panel" id="runsPanel" hidden>

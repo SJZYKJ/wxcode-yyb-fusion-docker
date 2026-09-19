@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"yyb_go/internal/store"
 )
 
 type fakeQingLong struct {
@@ -519,6 +521,11 @@ func TestAccountJobsAreIsolatedDisabledByDefaultAndRunExplicitly(t *testing.T) {
 	if !strings.Contains(taskBefore, "export YYB_SERVER='yyb-go:8000@"+ref+"'") {
 		t.Fatalf("managed task_before = %q", taskBefore)
 	}
+	// 账号隔离：任务前命令必须把 WECHAT_OPENIDS 覆写成该账号的 openid，
+	// 否则脚本会去 /instances 枚举全部账号（曾经的「点运行却跑了所有账号」）。
+	if !strings.Contains(taskBefore, "export WECHAT_OPENIDS='test-openid'") {
+		t.Fatalf("托管任务没把运行限定到本账号: %q", taskBefore)
+	}
 
 	run := apiRequest(t, handler, http.MethodPost, "/api/qinglong/jobs/run", map[string]any{
 		"ref": ref, "script_key": "SuperNaiBA_YYB-GO-Script/MDHY.js",
@@ -664,5 +671,37 @@ func TestPushSecretStaysInQingLongEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(fake.taskBefores[len(fake.taskBefores)-1], "${YYB_RUN_ACCOUNT_"+ref+"_SERVERCHAN_KEY:-}") {
 		t.Fatalf("task_before does not reference account environment: %q", fake.taskBefores[len(fake.taskBefores)-1])
+	}
+}
+
+// 网关建的账号任务必须把这次运行限定在该账号上。
+//
+// 脚本池里的脚本按 WECHAT_SERVER + WECHAT_OPENIDS 取账号，WECHAT_OPENIDS 留空或写
+// ALL 时会去网关 /instances 枚举全部账号 —— 只靠 YYB_SERVER 是没用的，脚本池里没有
+// 任何脚本读它。
+func TestAccountTaskScopesRunToSingleAccount(t *testing.T) {
+	app := &App{cfg: Config{QingLongServer: "yyb-go:8000"}}
+	setting := &store.AccountPushSetting{Channel: "none"}
+	command, taskBefore, err := app.accountTaskSpec(
+		&store.WechatAccount{ID: 7, OpenID: "oTEST0openid0seven"}, "code脚本/绿鼻子.js", setting)
+	if err != nil {
+		t.Fatalf("accountTaskSpec() error = %v", err)
+	}
+	if command != "task code脚本/绿鼻子.js" {
+		t.Fatalf("command = %q", command)
+	}
+	if !strings.Contains(taskBefore, "export WECHAT_OPENIDS='oTEST0openid0seven'") {
+		t.Fatalf("任务前命令没限定账号: %q", taskBefore)
+	}
+	if !strings.Contains(taskBefore, "export YYB_SERVER='yyb-go:8000@7'") {
+		t.Fatalf("任务前命令丢了 YYB_SERVER: %q", taskBefore)
+	}
+	// openid 会被单引号包起来拼进任务前命令，出现引号/换行必须直接拒绝，
+	// 否则能拼出逃出引号的 shell 片段。
+	for _, bad := range []string{"", "   ", "bad'; rm -rf /", "line\nbreak", "back\\slash"} {
+		if _, _, err := app.accountTaskSpec(
+			&store.WechatAccount{ID: 8, OpenID: bad}, "code脚本/绿鼻子.js", setting); err == nil {
+			t.Fatalf("openid = %q 未被拒绝", bad)
+		}
 	}
 }

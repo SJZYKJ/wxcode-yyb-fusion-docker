@@ -205,16 +205,16 @@ func newOpenAPISpec() map[string]any {
 			},
 			"/api/qinglong/jobs/enable": map[string]any{
 				"put": openAPIOperation(
-					[]string{"qinglong"}, "启用或停用账号脚本定时任务", nil,
+					[]string{"qinglong"}, "启用或停用账号脚本定时任务（任务只跑该账号）", nil,
 					jsonRequestBody(refSchema("JobActionRequest")),
 					defaulted(map[string]any{"200": jsonResponse("任务开关结果。", freeFormObjectSchema("任务状态。"))}),
 				),
 			},
 			"/api/qinglong/jobs/run": map[string]any{
 				"post": openAPIOperation(
-					[]string{"qinglong"}, "立即运行账号脚本一次", nil,
+					[]string{"qinglong"}, "立即运行账号脚本一次（任务已限定为只跑该账号）", nil,
 					jsonRequestBody(refSchema("JobRunRequest")),
-					defaulted(map[string]any{"202": jsonResponse("任务已提交到青龙。", freeFormObjectSchema("任务提交状态。"))}),
+					defaulted(map[string]any{"202": jsonResponse("任务已提交到青龙；任务前命令会把 WECHAT_OPENIDS 限定成本账号，不会跑其它账号。", freeFormObjectSchema("任务提交状态。"))}),
 				),
 			},
 			"/api/qinglong/jobs/log": map[string]any{

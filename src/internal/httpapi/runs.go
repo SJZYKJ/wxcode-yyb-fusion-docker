@@ -756,7 +756,7 @@ func (a *App) ensureAccountJob(ctx context.Context, acc *store.WechatAccount, sc
 	if err != nil {
 		return nil, scriptSource{}, err
 	}
-	command, taskBefore, err := a.accountTaskSpec(acc.ID, scriptKey, setting)
+	command, taskBefore, err := a.accountTaskSpec(acc, scriptKey, setting)
 	if err != nil {
 		return nil, scriptSource{}, err
 	}
@@ -798,7 +798,15 @@ func managedLogName(accountID int64, scriptKey string) string {
 	return fmt.Sprintf("yyb_account_%d_%x", accountID, sum[:6])
 }
 
-func (a *App) accountTaskSpec(accountID int64, scriptPath string, setting *store.AccountPushSetting) (string, string, error) {
+// accountTaskSpec 拼出「网关托管的账号任务」：命令负责跑脚本，任务前命令负责把这
+// 一次运行限定在这个账号上。
+//
+// ⚠️ 隔离靠的是任务前命令把 WECHAT_OPENIDS 覆写成该账号的 openid：脚本池里的脚本按
+// WECHAT_SERVER + WECHAT_OPENIDS 取账号，WECHAT_OPENIDS 留空或写 ALL 时会去网关
+// /instances 枚举全部账号 —— 那正是「点运行却把所有账号跑了一遍」的原因。
+// 只有网关建的任务会被限定；用户自己在青龙里建的任务不受影响，仍按全局
+// WECHAT_OPENIDS（想跑全部账号就写 ALL）。
+func (a *App) accountTaskSpec(acc *store.WechatAccount, scriptPath string, setting *store.AccountPushSetting) (string, string, error) {
 	// scriptPath 就是脚本相对青龙脚本目录的完整路径（如 code脚本/绿鼻子.js），
 	// 青龙的 task 命令认这个写法，不用再拼目录前缀。
 	if !validScriptPath(scriptPath) {
@@ -806,6 +814,9 @@ func (a *App) accountTaskSpec(accountID int64, scriptPath string, setting *store
 	}
 	if !regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`).MatchString(a.cfg.QingLongServer) {
 		return "", "", fmt.Errorf("YYB_QINGLONG_SERVER 格式不合法")
+	}
+	if strings.TrimSpace(acc.OpenID) == "" || strings.ContainsAny(acc.OpenID, "'\r\n\\") {
+		return "", "", fmt.Errorf("账号 openid 含有无法安全写进任务的字符，无法生成只跑该账号的任务")
 	}
 	pushKey, pushPlusToken, pushPlusTopic, qywxKey := "''", "''", "''", "''"
 	switch setting.Channel {
@@ -820,9 +831,11 @@ func (a *App) accountTaskSpec(accountID int64, scriptPath string, setting *store
 		qywxKey = envReference(setting.TokenEnvName)
 	}
 	command := "task " + scriptPath
+	// WECHAT_OPENIDS 是脚本池里脚本认的账号清单（见 code脚本/wechat_tools.*）：
+	// 在这里写死成本账号，脚本就不会再去 /instances 枚举全部账号。
 	taskBefore := fmt.Sprintf(
-		"export YYB_SERVER='%s@%d'; export PUSH_KEY=%s; export PUSH_PLUS_TOKEN=%s; export PUSH_PLUS_USER=%s; export QYWX_KEY=%s",
-		a.cfg.QingLongServer, accountID, pushKey, pushPlusToken, pushPlusTopic, qywxKey,
+		"export YYB_SERVER='%s@%d'; export WECHAT_OPENIDS='%s'; export PUSH_KEY=%s; export PUSH_PLUS_TOKEN=%s; export PUSH_PLUS_USER=%s; export QYWX_KEY=%s",
+		a.cfg.QingLongServer, acc.ID, acc.OpenID, pushKey, pushPlusToken, pushPlusTopic, qywxKey,
 	)
 	return command, taskBefore, nil
 }
@@ -943,7 +956,7 @@ func (a *App) refreshAccountJobCommands(ctx context.Context, acc *store.WechatAc
 		if !found {
 			continue
 		}
-		command, taskBefore, err := a.accountTaskSpec(acc.ID, key, setting)
+		command, taskBefore, err := a.accountTaskSpec(acc, key, setting)
 		if err != nil {
 			return err
 		}
