@@ -2,7 +2,7 @@
 
 > 单容器跑通微信小程序取码：浏览器打开 `/scan` 出二维码 → 手机微信扫码 → 登录态
 > （login_buffer）自动保存并刷新，青龙脚本随后按账号取 code。
-> **无需 root 手机、无需 Android 容器、无需 Xposed**（v11 起安卓设备 Hook 取码已整体下线）。
+> **无需 root 手机、无需 Android 容器、无需 Xposed**（v13 起安卓设备 Hook 取码已整体下线）。
 
 ## ⚡ 一键部署（推荐）
 
@@ -30,7 +30,7 @@ cd wxcode-yyb-fusion-docker && ./deploy.sh
 - 登录态由网关托管：login_buffer 过期前自动刷新，过期且刷新失败时提示重新扫码；
 - 取码走原生协议（`/login`、`/wxapp/getCode`），带 `ref` 可指定账号，缺省自动选
   「存活优先、其次最近更新」的账号；
-- v11 起只有原生扫码协议。旧版的安卓设备 Hook（wxcode APK / LSPosed / Zygisk，
+- v13 起只有原生扫码协议。旧版的安卓设备 Hook（wxcode APK / LSPosed / Zygisk，
   `/wxcode/*`、`/whoami`、`/wxapp/deviceCode` 等设备端点）已全部移除，镜像不再内置 APK。
 
 ## 二、目录结构
@@ -287,7 +287,7 @@ v3.0.0 及更早的 docker-deploy 曾用 redroid（Android-in-Docker）把微信
 微信登录态，非常脆弱。
 
 v4.0.0 起改为**单服务纯 Docker**：扫码登录走 YYB Go 原生协议，完全不需要 Android 环境。
-v11 起连「可选的安卓设备取码端点」也一并移除，代码与镜像中不再含任何安卓组件。
+v13 起连「可选的安卓设备取码端点」也一并移除，代码与镜像中不再含任何安卓组件。
 
 ## 七、常见问题
 
@@ -311,7 +311,7 @@ v11 起连「可选的安卓设备取码端点」也一并移除，代码与镜�
 - **没配 YYB_API_TOKEN，脚本却报 401？** v4.2.4 起网关会自动生成令牌，去容器日志里取：`docker compose logs | grep -A6 已自动生成`，把它填到青龙的 `YYB_API_TOKEN`；或在 `.env` 里显式指定一次再重启。
 - **升级后容器重启，令牌会变吗？** 不会。自动生成的令牌存在数据库（`app_settings.api_token`），跟随数据卷持久化。**除非你把数据卷删了**（那等于换了个新实例，需要在青龙里同步更新）。
 - **升级后注册页打不开了？** v4.2.4 起公开注册默认关闭。库中还没有账号时，从**内网**访问 `/register` 仍可注册首个管理员；已有账号后需要管理员在「用户管理」里创建，或临时设 `YYB_ALLOW_REGISTRATION=true`。
-- **以前用 wxcode 手机 hook 取码，升级 v11 后怎么办？** 设备 Hook 取码已整体移除（`/wxcode/*`、`/whoami`、`/wxapp/deviceCode` 等端点不再存在，`WXCODE_URLS` 配置项已删）。原生扫码登录（`/scan` → 手机微信扫码）覆盖全部取码需求，把脚本指向网关即可，无需其它改动。
+- **以前用 wxcode 手机 hook 取码，升级 v13 后怎么办？** 设备 Hook 取码已整体移除（`/wxcode/*`、`/whoami`、`/wxapp/deviceCode` 等端点不再存在，`WXCODE_URLS` 配置项已删）。原生扫码登录（`/scan` → 手机微信扫码）覆盖全部取码需求，把脚本指向网关即可，无需其它改动。
 - **填了令牌后浏览器登不上控制台？** 不会。`POST /login`（带 `username`）与登录页始终放行，工作台用会话 Cookie 访问接口也不受令牌限制。
 - **改了源码怎么重新出镜像？** ① `./build-gateway.sh`（交叉编译 amd64+arm64）→ ② `cp -r src/resource/templates/. gateway/resource/templates/` → ③ `docker compose -f compose.build.yaml up -d --build`。只改前端模板的话第①步可以跳过。
 - **怎么发新版本到 Docker Hub？** 推送到 `main` 分支即可，GitHub Actions 会自动构建双架构镜像并打上 `latest` 与 `v<N>` 两个标签（提交 SHA 记录在 Release 说明里）。注意：改 Go 代码必须先跑 `build-gateway.sh` 并提交 `gateway/` 里的二进制，CI 只做打包不做编译。
