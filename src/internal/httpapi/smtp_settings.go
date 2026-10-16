@@ -19,9 +19,11 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SMTP 设置项在 app_settings 表里的键名。逐项存储而不是整块 JSON，
@@ -202,6 +204,10 @@ func (a *App) handleSMTPSettings(w http.ResponseWriter, r *http.Request) {
 			} else if err := sendVerificationMail(saved, normalizeEmail(to), "123456"); err != nil {
 				result["ok"] = false
 				result["error"] = err.Error()
+				// 把「服务器原始报错」翻译成可执行的中文提示。
+				// 535 这类错误在 163/QQ 邮箱上会同时对应「授权码错误」「未开启 SMTP 服务」
+				// 「发信 IP 被限制」等多种原因，光看英文原文管理员无从下手。
+				result["hint"] = diagnoseSMTPFailure(saved, err)
 			} else {
 				result["ok"] = true
 			}
@@ -235,6 +241,64 @@ func validateSMTPConfig(cfg SMTPConfig) error {
 		return errors.New("发件人地址格式不正确")
 	}
 	return nil
+}
+
+// diagnoseSMTPFailure 把 SMTP 的原始报错翻译成管理员能照着做的中文提示。
+//
+// 为什么要做这件事：163 / QQ / 腾讯企业邮在「授权码错误」「未开启 SMTP 服务」
+// 「发信 IP 被限制」「账号被锁」这几种情况下，返回的几乎是同一句
+//
+//	535 "Error: authentication failed"
+//
+// 光把这句英文丢给管理员等于没说——他会反复怀疑自己密码打错了。
+// 这里先做一次 TCP 连通性探测，把「根本连不上」与「连上了但被拒」分开，
+// 再按错误关键词给出针对性建议。
+func diagnoseSMTPFailure(cfg SMTPConfig, err error) string {
+	host := strings.TrimSpace(cfg.Host)
+	addr := net.JoinHostPort(host, strconv.Itoa(cfg.Port))
+
+	// 先分清：连不上服务器 vs 连上了被拒。这一步很关键——
+	// 「连不上」应该去查网络/端口，而不是反复改密码。
+	conn, dialErr := net.DialTimeout("tcp", addr, 6*time.Second)
+	if dialErr != nil {
+		return "无法连接到邮件服务器 " + addr + "：" + dialErr.Error() +
+			"。请确认服务器地址与端口是否正确，以及服务器所在网络能否访问该端口（部分网络封禁 25/465/587）。"
+	}
+	_ = conn.Close()
+
+	message := err.Error()
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(message, "535"), strings.Contains(lower, "authentication failed"):
+		hint := "邮件服务器拒绝了登录（535）。常见原因："
+		hint += "① 密码填的是邮箱登录密码，而不是「SMTP 授权码」——163/QQ 等邮箱必须用授权码；"
+		hint += "② 邮箱设置里没有开启 SMTP/IMAP 服务；"
+		hint += "③ 授权码被重新生成过，旧的已失效；"
+		hint += "④ 发信 IP 被邮箱服务商风控（服务器/机房 IP 常被限制）。"
+		if isFreemailDomain(host) {
+			hint += " 当前使用 " + host + "，请优先检查 ①②③。"
+		}
+		return hint
+	case strings.Contains(message, "501"), strings.Contains(message, "553"):
+		return "发件人地址被拒绝（" + message + "）。多数邮箱要求「发件人地址」与登录用户名完全一致，请核对这两个字段。"
+	case strings.Contains(message, "550"), strings.Contains(message, "551"):
+		return "收件人地址被拒绝（" + message + "）。请确认测试收件地址真实存在且未拒收。"
+	case strings.Contains(lower, "timeout"):
+		return "连接邮件服务器超时。请检查服务器出网策略，或换用 465/587 端口重试。"
+	default:
+		return "发信失败：" + message + "。服务器地址可连通，问题出在认证或投递环节，请核对用户名 / 授权码 / 发件人地址。"
+	}
+}
+
+// isFreemailDomain 判断是否为「必须用授权码」的常见免费邮箱服务商。
+func isFreemailDomain(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, domain := range []string{"163.com", "126.com", "yeah.net", "qq.com", "sina.com", "sohu.com", "aliyun.com"} {
+		if strings.Contains(host, domain) {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshEmailVerifier 用新配置重建发信器，让设置改动立即生效（无需重启容器）。

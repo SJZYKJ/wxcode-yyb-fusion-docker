@@ -131,7 +131,7 @@
       return payload.data;
     }
     function toast(message, error = false) { const element = $("toast"); element.textContent = message; element.classList.toggle("error", error); element.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => { element.hidden = true; }, 3200); }
-    function feedback(id, message, error = true) { const element = $(id); element.hidden = false; element.className = `notice ${error ? "" : "ok"}`; element.textContent = message; }
+    function feedback(id, message, error = true) { const element = $(id); element.hidden = false; element.className = `notice ${error ? "" : "ok"}`; element.textContent = message; element.style.whiteSpace = "pre-wrap"; }
     function formatTime(value) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "从未登录"; }
     function renderUsers() {
       const query = $("searchUsers").value.trim().toLowerCase();
@@ -267,7 +267,10 @@
         } else if (saved.test && saved.test.ok) {
           toast(`邮件设置已保存，测试邮件已发送到 ${testTo}`);
         } else if (saved.test && saved.test.error) {
-          feedback("smtpFeedback", "设置已保存，但测试发信失败：" + saved.test.error);
+          // 优先展示后端给出的中文排障建议（hint）：535 这类错误光看英文原文，
+          // 管理员无法判断到底是授权码错了、没开 SMTP，还是 IP 被限制。
+          const detail = saved.test.hint || saved.test.error;
+          feedback("smtpFeedback", "设置已保存，但测试发信失败：" + saved.test.error + "\n\n" + detail);
           button.disabled = false;
           return;
         } else {
