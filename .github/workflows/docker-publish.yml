@@ -120,29 +120,39 @@ jobs:
         # 旧页面，接口是新的、页面是旧的，而且构建会「成功」——v16 就踩过这个坑：
         # 登录页停留在旧版、注册页没有邮箱验证码输入框。
         # 因此这里在构建前强制比对，不一致直接失败并给出修复命令。
-        # 用 diff -r 逐字节比较目录，不要用 "cp 之后再 git diff"：
-        #   · 顺序颠倒的陷阱：先 cp 就已经把 gateway 刷成与 src 一致，
-        #     要检测的差异在校验执行前被自己抹掉了，必然通过；
-        #   · EOL 陷阱：.gitattributes 的 * text=auto + *.html eol=lf 会让
-        #     git diff 先做换行符归一化再比较，CRLF 工作树与 LF index 之间
-        #     的真实内容差异可能被判为「无变化」。
-        # diff -r 直接比字节，与 git 的换行符魔法无关。
+        # 比较方式用「git 归一化后的 blob 哈希」，不要用 diff -r 字节比较，也不要用 cp 后再 git diff：
+        #   · cp 后再 git diff：先 cp 就把 gateway 刷成与 src 一致，要检测的差异
+        #     在校验执行前被自己抹掉，必然通过（假防线）；
+        #   · diff -r 字节比较：比较的是「检出产物」而不是「内容」。src/ 有自己的
+        #     .gitattributes（text=auto + eol=lf），gateway/ 只受根 .gitattributes 约束，
+        #     在 core.autocrlf 机器上两个检出会得到不同字节数 —— 干净 clone 里会误报失败。
+        #   · git hash-object 先按仓库规则归一化再算哈希，与检出环境无关，只反映真实内容。
         run: |
           set -euo pipefail
-          status=0
-          for pair in "templates" "static"; do
-            if ! diff -r -q "src/resource/$pair" "gateway/resource/$pair"; then
-              echo "::error::gateway/resource/$pair 与 src/resource/$pair 不一致 —— 镜像会打包旧页面。"
-              status=1
-            fi
+          fail=0
+          for pair in templates static; do
+            while IFS= read -r -d '' f; do
+              rel="${f#src/resource/$pair/}"
+              g="gateway/resource/$pair/$rel"
+              if [ ! -f "$g" ]; then
+                echo "::error::缺少 gateway/resource/$pair/$rel —— 镜像会缺页面。"
+                fail=1
+                continue
+              fi
+              if [ "$(git hash-object -- "$f")" != "$(git hash-object -- "$g")" ]; then
+                echo "::error::内容不一致：$pair/$rel"
+                fail=1
+              fi
+            done < <(find "src/resource/$pair" -type f -print0 | sort -z)
           done
-          if [ "$status" -ne 0 ]; then
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::gateway/resource 与 src/resource 不一致 —— 镜像会打包旧页面。"
             echo "::error::请在本机执行下面两条命令同步后提交："
             echo "::error::  cp -r src/resource/templates/. gateway/resource/templates/"
             echo "::error::  cp -r src/resource/static/.    gateway/resource/static/"
             exit 1
           fi
-          echo "  ok  gateway/resource 与 src/resource 逐字节一致"
+          echo "  ok  gateway/resource 与 src/resource 内容一致"
 
       - name: 准备 QEMU（用于跨架构构建）
         uses: docker/setup-qemu-action@v3
