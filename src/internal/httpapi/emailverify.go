@@ -122,6 +122,17 @@ func newEmailVerifier(send func(email, code string) error) *emailVerifier {
 	}
 }
 
+// setSend 在运行时替换发信函数，供管理员在界面上改完 SMTP 设置后立即生效。
+//
+// 为什么不整体重建 verifier：codes / sends 两张表里存着「已发出的验证码」和
+// 「发送限流窗口」，整体重建会把这些内存状态清空——正等着收码的用户会被迫重发，
+// 攻击者也能借一次设置变更绕过限流。这里只换发信函数，状态保持不动。
+func (v *emailVerifier) setSend(send func(email, code string) error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.send = send
+}
+
 func (v *emailVerifier) now() time.Time {
 	if v.nowFunc != nil {
 		return v.nowFunc()
@@ -550,7 +561,7 @@ func (a *App) emailCodeFor() *emailVerifier {
 // 前端可据此在注册页提示「邮件服务未配置」，但即便前端不判断，
 // 后端也会在发送与注册两处硬拒（见 handleEmailCode / handleRegister）。
 func (a *App) EmailVerificationEnabled() bool {
-	return a.emailCodeFor() != nil && a.cfg.SMTP.Configured()
+	return a.emailCodeFor() != nil && a.activeSMTPConfig().Configured()
 }
 
 // handleEmailCode 处理 POST /api/auth/email-code：发送一枚注册验证码。
@@ -611,7 +622,9 @@ func (a *App) verifyRegistrationEmail(email, code string) error {
 	if verifier == nil {
 		return errors.New("当前模式不支持邮箱验证注册")
 	}
-	if !a.cfg.SMTP.Configured() {
+	// 用「当前生效」的配置判断，而不是启动时的环境变量：管理员在界面上配好 SMTP 后，
+	// 注册必须立刻可用，否则会出现「设置页显示已配置、注册却仍报未配置」的矛盾。
+	if !a.activeSMTPConfig().Configured() {
 		return errors.New(smtpNotConfiguredMessage)
 	}
 	if strings.TrimSpace(code) == "" {

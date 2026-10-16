@@ -179,6 +179,10 @@ func NewApp(cfg Config) (*App, error) {
 	}
 	// 注册邮箱验证码：只有账号模式才需要。SMTP 未配置时 send 为 nil，
 	// emailVerifier.RegisterCode 会直接拒绝发送（fail-closed，见 emailverify.go）。
+	//
+	// 这里先用环境变量建一个初始发信器；稍后 loadSMTPSettings/refreshEmailVerifier
+	// 会把它覆盖成「管理员在界面上保存的设置」——因为 settings 表要等 auth 初始化后
+	// 才能读，而 emailVerifier 现在就要构造好，避免中间出现 nil 窗口。
 	if cfg.SMTP.Configured() {
 		app.emailCode = newEmailVerifier(newSMTPSender(cfg.SMTP).SendVerificationCode)
 	} else {
@@ -215,6 +219,10 @@ func NewApp(cfg Config) (*App, error) {
 		}
 		app.auth = authStore
 	}
+	// auth 就绪后才能读 settings 表：把发信器换成「数据库里管理员保存的设置」。
+	// 必须放在 app.auth 赋值之后，否则 loadSMTPSettings 读不到库、还会被 emailCodeFor
+	// 的 auth==nil 判断挡住。这一步让「界面配好的邮件设置」在重启后依然生效。
+	app.refreshEmailVerifier(app.activeSMTPConfig())
 	app.startKeepAlive()
 	return app, nil
 }
@@ -334,6 +342,9 @@ func (a *App) Handler() http.Handler {
 	// requireAdminSession 之后，非管理员照旧在中间件层被 403 挡掉。
 	router.Any("/api/auth/users/*path", gin.WrapF(a.handleUserAction))
 	router.Any("/api/auth/registration", gin.WrapF(a.handleRegistrationSetting))
+	// 邮件（SMTP）设置：管理员在「用户管理」页自助配置注册验证码的发信参数。
+	// 挂在 requireAdminSession 之后 —— 里面含 SMTP 密码，绝不能对普通用户开放。
+	router.Any("/api/auth/smtp", gin.WrapF(a.handleSMTPSettings))
 	router.Any("/api/qinglong/config", gin.WrapF(a.handleQingLongConfig))
 	// 非管理员能看到的脚本目录（全局一份白名单；留空 = 不限制）
 	router.Any("/api/qinglong/script-visibility", gin.WrapF(a.handleScriptVisibility))

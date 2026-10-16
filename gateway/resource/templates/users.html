@@ -47,8 +47,17 @@
     </section>
     <section class="card" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
-        <div><h2 style="margin:0">注册策略</h2><p class="description" style="margin:5px 0 0">允许新用户从登录页自行注册，关闭后仅管理员可创建成员。</p></div>
+        <div><h2 style="margin:0">注册策略</h2><p class="description" style="margin:5px 0 0">允许新用户从登录页自行注册，关闭后仅管理员可创建成员。注册需要邮箱验证，请先在下方配置邮件服务。</p></div>
         <label style="display:flex;align-items:center;gap:9px"><input id="registration" type="checkbox"> 开放注册</label>
+      </div>
+    </section>
+    <section class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
+        <div>
+          <h2 style="margin:0">邮件服务（SMTP）</h2>
+          <p class="description" style="margin:5px 0 0">注册邮箱验证码依赖这里的配置。<b id="smtpState">加载中…</b></p>
+        </div>
+        <button class="btn secondary" id="showSmtp" type="button">配置邮件服务</button>
       </div>
     </section>
     <div class="users-toolbar">
@@ -88,6 +97,22 @@
         <div class="notice" id="resetFeedback" hidden></div>
       </div>
       <div class="platform-dialog-actions"><button class="btn secondary" type="button" data-close-dialog>取消</button><button class="btn primary" id="resetPasswordSubmit" type="submit">重置密码</button></div>
+    </form>
+  </dialog>
+  <dialog class="platform-dialog" id="smtpDialog">
+    <form id="smtpForm" method="dialog">
+      <div class="platform-dialog-head"><div><h2>邮件服务设置</h2><p>用于发送注册邮箱验证码。保存后立即生效，无需重启容器。</p></div><button class="platform-dialog-close" type="button" data-close-dialog aria-label="关闭">×</button></div>
+      <div class="platform-dialog-body">
+        <div class="field"><label for="smtpHost">SMTP 服务器</label><input class="input" id="smtpHost" autocomplete="off" placeholder="smtp.qq.com" required></div>
+        <div class="field"><label for="smtpPort">端口</label><input class="input" id="smtpPort" type="number" min="1" max="65535" placeholder="465" required><small class="description">465 为 SMTPS（推荐）；587/25 走 STARTTLS。</small></div>
+        <div class="field"><label for="smtpUsername">用户名</label><input class="input" id="smtpUsername" autocomplete="off" placeholder="you@qq.com" required></div>
+        <div class="field"><label for="smtpPassword">密码 / 授权码</label><input class="input" id="smtpPassword" type="password" autocomplete="new-password" placeholder="留空表示不修改已保存的密码"><small class="description" id="smtpHint">邮箱服务多用「授权码」而非登录密码。</small></div>
+        <div class="field"><label for="smtpFrom">发件人地址</label><input class="input" id="smtpFrom" type="email" autocomplete="off" placeholder="you@qq.com" required></div>
+        <label style="display:flex;align-items:center;gap:9px;margin-bottom:8px"><input id="smtpTLS" type="checkbox"> 使用 SSL/TLS（465 端口请勾选）</label>
+        <div class="field"><label for="smtpTestTo">发送测试邮件到</label><input class="input" id="smtpTestTo" type="email" autocomplete="off" placeholder="留空则不发送测试"><small class="description">填写后会真实发一封信，用来验证配置是否正确。</small></div>
+        <div class="notice" id="smtpFeedback" hidden></div>
+      </div>
+      <div class="platform-dialog-actions"><button class="btn secondary" type="button" data-close-dialog>取消</button><button class="btn primary" id="smtpSubmit" type="submit">保存设置</button></div>
     </form>
   </dialog>
   <div class="toast" id="toast" hidden role="status"></div>
@@ -188,7 +213,75 @@
     $("usersBody").onclick = async event => { const button = event.target.closest("button[data-action]"); if (!button) return; const user = state.users.find(item => String(item.id) === button.dataset.id); if (!user) return; if (button.dataset.action === "role") await updateUser(user.id, user.role === "admin" ? "user" : "admin", user.enabled); if (button.dataset.action === "state") await updateUser(user.id, user.role, !user.enabled); if (button.dataset.action === "password") openReset(user); if (button.dataset.action === "delete" && confirm(`确定删除用户“${user.display_name || user.username}”吗？此操作无法撤销。`)) { try { await api(`/api/auth/users/${user.id}/delete`, { method: "DELETE" }); toast("用户已删除"); await load(); } catch (error) { toast(error.message, true); } } };
     $("registration").onchange = async event => { try { await api("/api/auth/registration", { method: "PUT", body: JSON.stringify({ enabled: event.target.checked }) }); toast(event.target.checked ? "已开放用户注册" : "已关闭用户注册"); } catch (error) { event.target.checked = !event.target.checked; toast(error.message, true); } };
     $("searchUsers").oninput = renderUsers;
-    load().catch(error => toast(error.message, true));
+
+    // ---- 邮件服务（SMTP）设置 ----
+    // 密码永不回显：后端只返回 password_set 布尔值。留空提交 = 沿用旧密码。
+    function renderSmtpState(settings) {
+      $("smtpState").textContent = settings.configured
+        ? `已配置（${settings.host}:${settings.port}）`
+        : "尚未配置，注册功能会被拒绝";
+    }
+    async function openSmtp() {
+      $("smtpFeedback").hidden = true;
+      try {
+        const s = await api("/api/auth/smtp");
+        $("smtpHost").value = s.host || "";
+        $("smtpPort").value = s.port || 465;
+        $("smtpUsername").value = s.username || "";
+        $("smtpFrom").value = s.from || "";
+        $("smtpTLS").checked = !!s.tls;
+        $("smtpPassword").value = "";
+        $("smtpTestTo").value = "";
+        $("smtpHint").textContent = s.password_set
+          ? "已保存密码；留空表示不修改。"
+          : "邮箱服务多用「授权码」而非登录密码。";
+        $("smtpDialog").showModal();
+        $("smtpHost").focus();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    }
+    $("showSmtp").onclick = openSmtp;
+    $("smtpForm").onsubmit = async event => {
+      event.preventDefault();
+      const button = $("smtpSubmit");
+      button.disabled = true;
+      const payload = {
+        host: $("smtpHost").value.trim(),
+        port: Number($("smtpPort").value),
+        username: $("smtpUsername").value.trim(),
+        from: $("smtpFrom").value.trim(),
+        tls: $("smtpTLS").checked
+      };
+      // 只有真正填了密码才提交，避免把已保存的密码覆盖成空串。
+      const password = $("smtpPassword").value;
+      if (password) payload.password = password;
+      const testTo = $("smtpTestTo").value.trim();
+      if (testTo) payload.test_to = testTo;
+      try {
+        const saved = await api("/api/auth/smtp", { method: "PUT", body: JSON.stringify(payload) });
+        renderSmtpState(saved);
+        const skipped = saved.test && saved.test.skipped;
+        if (skipped) {
+          toast("邮件设置已保存");
+        } else if (saved.test && saved.test.ok) {
+          toast(`邮件设置已保存，测试邮件已发送到 ${testTo}`);
+        } else if (saved.test && saved.test.error) {
+          feedback("smtpFeedback", "设置已保存，但测试发信失败：" + saved.test.error);
+          button.disabled = false;
+          return;
+        } else {
+          toast("邮件设置已保存");
+        }
+        $("smtpDialog").close();
+      } catch (error) {
+        feedback("smtpFeedback", error.message);
+      } finally {
+        button.disabled = false;
+      }
+    };
+
+    load().then(() => api("/api/auth/smtp").then(renderSmtpState).catch(() => {})).catch(error => toast(error.message, true));
   </script>
   <script src="/static/js/platform.js"></script>
 </body>
