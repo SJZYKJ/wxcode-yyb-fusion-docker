@@ -114,25 +114,25 @@ type DB struct {
 }
 
 type WechatAccount struct {
-	ID            int64          `json:"id"`
-	OpenID        string         `json:"openid"`
-	UIN           *int64         `json:"uin,omitempty"`
-	Alias         *string        `json:"alias,omitempty"`
-	Nickname      *string        `json:"nickname,omitempty"`
-	Remark        *string        `json:"remark,omitempty"`
-	Avatar        *string        `json:"avatar,omitempty"`
-	UserInfo      map[string]any `json:"user_info,omitempty"`
-	LoginBuffer   string         `json:"login_buffer,omitempty"`
-	Credentials   map[string]any `json:"credentials,omitempty"`
-	Status        *string        `json:"status,omitempty"`
+	ID          int64          `json:"id"`
+	OpenID      string         `json:"openid"`
+	UIN         *int64         `json:"uin,omitempty"`
+	Alias       *string        `json:"alias,omitempty"`
+	Nickname    *string        `json:"nickname,omitempty"`
+	Remark      *string        `json:"remark,omitempty"`
+	Avatar      *string        `json:"avatar,omitempty"`
+	UserInfo    map[string]any `json:"user_info,omitempty"`
+	LoginBuffer string         `json:"login_buffer,omitempty"`
+	Credentials map[string]any `json:"credentials,omitempty"`
+	Status      *string        `json:"status,omitempty"`
 	// OwnerUserID 为账号归属的控制台用户；NULL 表示未归属（老数据/未启用鉴权时创建），
 	// 只有管理员可见可管。
-	OwnerUserID   *int64         `json:"owner_user_id,omitempty"`
+	OwnerUserID *int64 `json:"owner_user_id,omitempty"`
 	// APIShared 为是否允许无会话的脚本/API（/instances、/wxapp/* 等）读取本账号，默认允许。
-	APIShared     bool           `json:"api_shared"`
-	LastCheckedAt *int64         `json:"last_checked_at,omitempty"`
-	CreatedAt     int64          `json:"created_at"`
-	UpdatedAt     int64          `json:"updated_at"`
+	APIShared     bool   `json:"api_shared"`
+	LastCheckedAt *int64 `json:"last_checked_at,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
 }
 
 type AccountPublic struct {
@@ -145,7 +145,7 @@ type AccountPublic struct {
 	Avatar        *string `json:"avatar"`
 	Status        *string `json:"status"`
 	OwnerUserID   *int64  `json:"owner_user_id"`
-	APIShared      bool    `json:"api_shared"`
+	APIShared     bool    `json:"api_shared"`
 	LastCheckedAt *int64  `json:"last_checked_at"`
 	CreatedAt     int64   `json:"created_at"`
 	UpdatedAt     int64   `json:"updated_at"`

@@ -25,11 +25,15 @@ func newOwnershipApp(t *testing.T) (http.Handler, *App) {
 	t.Setenv("GIN_MODE", "test")
 	// AllowNoAuth：本文件只验证「谁能看到/操作哪些账号」，与取码接口的令牌
 	// 鉴权无关；令牌链路本身在 api_token_test.go 里单独覆盖。
-	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite", AllowNoAuth: true})
+	// 注册流程要求邮箱验证码，这里给一份可用的测试 SMTP 配置并把发信替换成
+	// 内存捕获（见 api_token_test.go 的 installCodeCapture）。
+	// AllowRegistration：本文件验证的是账号归属隔离，注册开关本身另有测试覆盖。
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite", AllowNoAuth: true, SMTP: testSMTP, AllowRegistration: true})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
 	}
 	t.Cleanup(func() { app.Close() })
+	installCodeCapture(app)
 	return app.Handler(), app
 }
 
@@ -115,7 +119,7 @@ func TestAccountOwnershipIsolatesConsoleButKeepsAPIReadable(t *testing.T) {
 
 	// 首个注册账号自动成为管理员。
 	register := serveJSON(t, handler, http.MethodPost, "/register",
-		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`"}`, nil)
+		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`","email":"owner@example.com","code":"`+requestEmailCode(t, handler, app, "owner@example.com")+`"}`, nil)
 	if register.Code != http.StatusCreated {
 		t.Fatalf("POST /register status = %d body = %s", register.Code, register.Body.String())
 	}
@@ -246,10 +250,10 @@ func TestAccountOwnershipIsolatesConsoleButKeepsAPIReadable(t *testing.T) {
 
 // 普通用户不再被重定向到个人设置页，也不能进管理员专属页面。
 func TestConsoleRoutesAreAvailableToNormalUsers(t *testing.T) {
-	handler, _ := newOwnershipApp(t)
+	handler, app := newOwnershipApp(t)
 
 	register := serveJSON(t, handler, http.MethodPost, "/register",
-		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`"}`, nil)
+		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`","email":"owner@example.com","code":"`+requestEmailCode(t, handler, app, "owner@example.com")+`"}`, nil)
 	adminCookie := sessionCookieOf(t, register)
 	created := serveJSON(t, handler, http.MethodPost, "/api/auth/users",
 		`{"username":"alice","display_name":"Alice","password":"`+ownershipUserPassword+`","role":"user"}`, adminCookie)
@@ -299,7 +303,7 @@ func TestOwnerForScanAssignment(t *testing.T) {
 	handler := app.Handler()
 
 	register := serveJSON(t, handler, http.MethodPost, "/register",
-		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`"}`, nil)
+		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`","email":"owner@example.com","code":"`+requestEmailCode(t, handler, app, "owner@example.com")+`"}`, nil)
 	adminCookie := sessionCookieOf(t, register)
 	created := serveJSON(t, handler, http.MethodPost, "/api/auth/users",
 		`{"username":"alice","display_name":"Alice","password":"`+ownershipUserPassword+`","role":"user"}`, adminCookie)

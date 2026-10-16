@@ -38,7 +38,7 @@ type consoleFixture struct {
 func newConsoleFixture(t *testing.T) *consoleFixture {
 	t.Helper()
 	handler, app := newAPITokenApp(t, testAPIToken)
-	adminCookie := registerSessionUser(t, handler)
+	adminCookie := registerSessionUser(t, handler, app)
 
 	created := serveJSON(t, handler, http.MethodPost, "/api/auth/users",
 		`{"username":"alice","display_name":"Alice","password":"`+ownershipUserPassword+`","role":"user"}`, adminCookie)

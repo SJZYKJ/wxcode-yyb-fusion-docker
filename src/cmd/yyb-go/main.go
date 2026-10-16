@@ -24,6 +24,15 @@ func main() {
 	tcpProxy := flag.String("tcp-proxy", "", "optional TCP proxy: socks5://host:port or http-connect://host:port")
 	keepAliveInterval := flag.Duration("keepalive-interval", 30*time.Minute, "account keepalive check interval; 0 disables")
 	keepAliveAhead := flag.Duration("keepalive-ahead", 45*time.Minute, "refresh credentials this long before expiry")
+	// SMTP：注册邮箱验证码的发信配置。命令行 flag 优先，缺省回落到
+	// YYB_SMTP_* 环境变量；未配置时 /api/auth/email-code 返回 503，
+	// 且注册会被明确拒绝（不允许静默跳过邮箱验证）。
+	smtpHost := flag.String("smtp-host", "", "SMTP host for registration email codes (env YYB_SMTP_HOST)")
+	smtpPort := flag.Int("smtp-port", 0, "SMTP port, default 465 (env YYB_SMTP_PORT)")
+	smtpUsername := flag.String("smtp-username", "", "SMTP username (env YYB_SMTP_USERNAME)")
+	smtpPassword := flag.String("smtp-password", "", "SMTP password (env YYB_SMTP_PASSWORD)")
+	smtpFrom := flag.String("smtp-from", "", "SMTP envelope/From address (env YYB_SMTP_FROM)")
+	smtpTLS := flag.Bool("smtp-tls", true, "true: implicit TLS/SMTPS (465); false: STARTTLS (env YYB_SMTP_TLS)")
 	flag.Parse()
 	if dnsServers, err := configureDNS(os.Getenv("YYB_DNS_SERVERS")); err != nil {
 		log.Fatalf("configure DNS: %v", err)
@@ -78,6 +87,36 @@ func main() {
 		}
 	}
 
+	// SMTP 配置：先读环境变量（非法值直接启动失败，而不是带着错误配置跑起来），
+	// 再用显式传入的 flag 覆盖。
+	smtpCfg, smtpErr := httpapi.ParseSMTPConfig(func(key string) string { return os.Getenv(key) })
+	if smtpErr != nil {
+		log.Fatalf("configure SMTP: %v", smtpErr)
+	}
+	if *smtpHost != "" {
+		smtpCfg.Host = *smtpHost
+	}
+	if *smtpPort != 0 {
+		smtpCfg.Port = *smtpPort
+	}
+	if *smtpUsername != "" {
+		smtpCfg.Username = *smtpUsername
+	}
+	if *smtpPassword != "" {
+		smtpCfg.Password = *smtpPassword
+	}
+	if *smtpFrom != "" {
+		smtpCfg.From = *smtpFrom
+	}
+	if !*smtpTLS {
+		smtpCfg.TLS = false
+	}
+	if smtpCfg.Configured() {
+		log.Printf("注册邮箱验证码已启用：SMTP %s:%d（TLS=%v，发件人 %s）", smtpCfg.Host, smtpCfg.Port, smtpCfg.TLS, smtpCfg.From)
+	} else {
+		log.Printf("注册邮箱验证码未启用：未配置 SMTP（YYB_SMTP_HOST/PORT/USERNAME/PASSWORD/FROM），注册将被拒绝并提示联系管理员")
+	}
+
 	cfg := httpapi.Config{
 		ResourceRoot:      *resourceRoot,
 		DBFilename:        *dbFilename,
@@ -104,6 +143,7 @@ func main() {
 		AllowNoAuth:       envBool("YYB_ALLOW_NO_AUTH"),
 		AllowRegistration: envBool("YYB_ALLOW_REGISTRATION"),
 		TrustProxy:        envBool("YYB_TRUST_PROXY"),
+		SMTP:              smtpCfg,
 	}
 
 	app, err := httpapi.NewApp(cfg)

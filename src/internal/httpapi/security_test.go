@@ -97,9 +97,11 @@ func TestAPITokenAllowNoAuthOptOut(t *testing.T) {
 // 首次注册引导窗口：库中没有任何账号时，只允许内网/回环地址完成注册，
 // 公网直连一律拒绝——否则实例刚暴露到公网就会被人抢注成管理员。
 func TestRegistrationBootstrapRequiresPrivateNetwork(t *testing.T) {
-	app := newSecurityApp(t, Config{AuthDriver: "sqlite", AllowNoAuth: true})
+	app := newSecurityApp(t, Config{AuthDriver: "sqlite", AllowNoAuth: true, SMTP: testSMTP})
 	handler := app.Handler()
-	body := `{"username":"owner","displayName":"Owner","password":"` + ownershipAdminPassword + `"}`
+	ownerEmail := "owner@example.com"
+	ownerCode := requestEmailCode(t, handler, app, ownerEmail)
+	body := `{"username":"owner","displayName":"Owner","password":"` + ownershipAdminPassword + `","email":"` + ownerEmail + `","code":"` + ownerCode + `"}`
 
 	public := requestFrom(handler, http.MethodPost, "/register", body, "203.0.113.9:33333", nil)
 	if public.Code != http.StatusForbidden {
@@ -122,7 +124,7 @@ func TestRegistrationBootstrapRequiresPrivateNetwork(t *testing.T) {
 
 	// 已经有账号之后引导窗口关闭：内网也不能再公开注册。
 	again := requestFrom(handler, http.MethodPost, "/register",
-		`{"username":"intruder","displayName":"Intruder","password":"intruder-password-1"}`, localTestRemoteAddr, nil)
+		`{"username":"intruder","displayName":"Intruder","password":"intruder-password-1","email":"intruder@example.com","code":"123456"}`, localTestRemoteAddr, nil)
 	if again.Code != http.StatusForbidden {
 		t.Fatalf("已有账号后注册 status = %d, want 403 (body=%s)", again.Code, again.Body.String())
 	}
@@ -170,11 +172,12 @@ func TestClientIPIgnoresForwardedForUnlessTrustProxy(t *testing.T) {
 
 // 伪造 X-Forwarded-For 也刷不掉限速：按账号维度的计数始终生效。
 func TestLoginLockoutSurvivesSpoofedForwardedFor(t *testing.T) {
-	app := newSecurityApp(t, Config{AuthDriver: "sqlite", AllowNoAuth: true})
+	app := newSecurityApp(t, Config{AuthDriver: "sqlite", AllowNoAuth: true, SMTP: testSMTP})
 	handler := app.Handler()
 
+	ownerEmail := "owner@example.com"
 	register := requestFrom(handler, http.MethodPost, "/register",
-		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`"}`, localTestRemoteAddr, nil)
+		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`","email":"`+ownerEmail+`","code":"`+requestEmailCode(t, handler, app, ownerEmail)+`"}`, localTestRemoteAddr, nil)
 	if register.Code != http.StatusCreated {
 		t.Fatalf("注册管理员 status = %d (body=%s)", register.Code, register.Body.String())
 	}

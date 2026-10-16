@@ -81,6 +81,8 @@
     <div class="card-changelog">
       <div class="changelog-head"><h3>版本更新</h3><span class="changelog-now">当前版本 <b class="app-version">—</b></span></div>
       <ol class="changelog-list">
+        <li><span class="changelog-tag">v16</span><div class="changelog-body"><b>注册邮箱验证 + 用户批量删除</b><p>注册时必须填写邮箱并通过邮箱验证码校验，验证码 10 分钟内有效、一次性使用、同一邮箱发送带频率限制，邮箱重复注册会被拒绝；服务端未配置邮件服务时直接拒绝注册，不会静默放行。用户管理页新增复选框与「删除所选」按钮，可勾选多个成员一次性删除，删除前二次确认，并保护当前登录账号与最后一名管理员不被误删。</p></div></li>
+        <li><span class="changelog-tag">v15</span><div class="changelog-body"><b>修复青龙新建文件夹内的脚本在网关看不到的问题</b><p>青龙里新建的文件夹（脚本目录）现在能被网关照常识别，目录内的脚本会正确出现在「账号运行管理」列表中，不再出现脚本存在却列不出来的情况。</p></div></li>
         <li><span class="changelog-tag">v14</span><div class="changelog-body"><b>控制台界面整体重构 + 管理入口修复</b><p>统一设计系统：侧栏换成图标化导航（当前页高亮指示），卡片、按钮、表格全面升级质感与微动效；登录页改为居中卡片布局。修复普通用户登录后侧栏仍显示「用户管理」入口的权限显示错误——现在该入口仅管理员可见。</p></div></li>
         <li><span class="changelog-tag">v13</span><div class="changelog-body"><b>账号隔离真正落地 + 安卓支持下线</b><p>修复「点运行一个账号却跑了全部」的问题：手动运行严格只跑选中的那一个账号，定时脚本只跑登录账号名下的账号。安卓手机端（Xposed Hook）取码支持整体下线，只保留 Docker 部署与原生扫码协议。</p></div></li>
         <li><span class="changelog-tag">v10</span><div class="changelog-body"><b>账号隔离分两档 + 脚本目录可见范围</b><p>「运行」只跑选中的那一个 code 账号；打开「定时」后按网关登录账号隔离，同一脚本只建一条任务。管理员可指定非管理员只能看到放行目录下的脚本。</p></div></li>
@@ -93,7 +95,16 @@ const $=id=>document.getElementById(id);
 document.querySelector('.reveal').onclick=e=>{const p=$('password'),show=p.type==='password';p.type=show?'text':'password';e.currentTarget.setAttribute('aria-label',show?'隐藏密码':'显示密码')};
 $('form').onsubmit=async e=>{e.preventDefault();$('error').textContent='';$('submit').disabled=true;try{const params=new URLSearchParams(location.search),response=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,password:$('password').value,next:params.get('next')||'/'})}),json=await response.json();if(!response.ok||json.code!==0)throw new Error(json.msg||'登录失败');location.href=json.data.next||'/'}catch(error){$('error').textContent=error.message;$('submit').disabled=false}};
 if(new URLSearchParams(location.search).get('registration')==='disabled'){$('error').textContent='管理员已关闭新用户注册';$('registerLink').hidden=true}
-fetch('/static/version.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>{const v=d&&typeof d.version==='string'?d.version.trim():'';if(!v)return;document.querySelectorAll('.app-version').forEach(el=>{el.textContent=v})}).catch(()=>{});
+/* 版本号：优先读镜像内 /static/version.json —— 它由 Dockerfile 的 ARG VERSION 写入，
+   正式发版时 CI 传 --build-arg VERSION=v<N>（见 .github/workflows/docker-publish.yml），
+   本地 compose.build.yaml 自建时传的是 local。
+   FALLBACK_VERSION 只在 version.json 读不到/为空时兜底，避免登录页停在占位符「—」。
+   ⚠️ 它是「本次发布的版本号」的兜底值，发新版本时要跟着改；如果改成写死的旧号，
+   反而会把「读不到版本文件」伪装成一个看起来正常的旧版本，比显示「—」更难排查。 */
+const FALLBACK_VERSION='v16';
+const applyVersion=value=>{const v=(typeof value==='string'?value.trim():'')||FALLBACK_VERSION;document.querySelectorAll('.app-version').forEach(el=>{el.textContent=v})};
+applyVersion(null);
+fetch('/static/version.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>applyVersion(d&&d.version)).catch(()=>{});
 </script>
 </body>
 </html>

@@ -173,4 +173,3 @@ func (a *App) browserSessionUser(c *gin.Context) (*auth.User, bool) {
 	c.Request = c.Request.WithContext(ctx)
 	return user, true
 }
-

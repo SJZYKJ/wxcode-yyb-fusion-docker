@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -162,13 +163,39 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 405, "method not allowed")
 		return
 	}
-	var body struct{ Username, DisplayName, Password string }
+	// 字段逐个显式声明 json tag：
+	//  · displayName 必须保持 camelCase —— register.html 与既有 API 契约都用它，
+	//    改成 display_name 会让注册页提交的显示名被静默丢弃（长度校验直接 400）；
+	//  · email / code 是本次新增的注册邮箱验证字段；
+	//  · 邮箱不设必填约束，是为了让「未配置邮件服务」能回落到明确的 400 提示
+	//    （服务端未配置邮件服务，请联系管理员），而不是一句笼统的“请填写邮箱”。
+	var body struct {
+		Username    string `json:"username"`
+		DisplayName string `json:"displayName"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		Code        string `json:"code"`
+	}
 	if err := decodeOptionalJSON(r, &body); err != nil {
 		writeError(w, 400, "请求格式错误")
 		return
 	}
-	user, err := a.auth.RegisterUser(r.Context(), body.Username, body.DisplayName, body.Password)
+	email := normalizeEmail(body.Email)
+	if err := ValidateEmail(email); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	// 邮箱验证是硬前置：SMTP 没配置就直接拒绝，绝不静默跳过验证。
+	if err := a.verifyRegistrationEmail(email, body.Code); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	user, err := a.auth.RegisterUserWithEmail(r.Context(), body.Username, body.DisplayName, body.Password, email)
 	if err != nil {
+		if errors.Is(err, auth.ErrEmailExists) {
+			writeError(w, 400, "该邮箱已被注册")
+			return
+		}
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -386,6 +413,13 @@ func (a *App) handleUserAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor, _ := currentAuth(r)
+	// 批量删除走同一条 catch-all 路由：gin 不允许 "/api/auth/users/*path" 与
+	// 兄弟静态段 "/api/auth/users/batch-delete" 同时注册（构建路由树时 panic），
+	// 所以在这里按路径分派。requireAdmin 已在上面执行，鉴权语义不变。
+	if strings.Trim(r.URL.Path, "/") == strings.Trim(batchDeletePath, "/") {
+		a.handleUsersBatchDelete(w, r)
+		return
+	}
 	parts := strings.Split(strings.Trim(r.URL.Path[len("/api/auth/users/"):], "/"), "/")
 	if len(parts) != 2 {
 		writeError(w, 404, "not found")

@@ -29,19 +29,24 @@ func newOwnershipQingLongApp(t *testing.T, qlURL string) (http.Handler, *App) {
 		QingLongServer:   "yyb-go:8000",
 		AuthDriver:       "sqlite",
 		AllowNoAuth:      true,
+		// seedConsoleUsers 要注册管理员，因此需要可用的测试 SMTP + 注册开关。
+		SMTP:              testSMTP,
+		AllowRegistration: true,
 	})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
 	}
 	t.Cleanup(func() { _ = app.Close() })
+	installCodeCapture(app)
 	return app.Handler(), app
 }
 
 // seedConsoleUsers 建管理员（首个注册账号）+ 普通用户 alice，返回两人的会话。
-func seedConsoleUsers(t *testing.T, handler http.Handler) (adminCookie, aliceCookie *http.Cookie, aliceID int64) {
+func seedConsoleUsers(t *testing.T, handler http.Handler, app *App) (adminCookie, aliceCookie *http.Cookie, aliceID int64) {
 	t.Helper()
+	ownerEmail := "owner@example.com"
 	register := serveJSON(t, handler, http.MethodPost, "/register",
-		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`"}`, nil)
+		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`","email":"`+ownerEmail+`","code":"`+requestEmailCode(t, handler, app, ownerEmail)+`"}`, nil)
 	if register.Code != http.StatusCreated {
 		t.Fatalf("register = %d %s", register.Code, register.Body.String())
 	}
@@ -85,7 +90,7 @@ func refOf(id int64) string { return strconv.FormatInt(id, 10) }
 func TestLoginAccountScheduleCoversOwnedAccountsOnly(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	handler, app := newOwnershipQingLongApp(t, server.URL)
-	adminCookie, aliceCookie, aliceID := seedConsoleUsers(t, handler)
+	adminCookie, aliceCookie, aliceID := seedConsoleUsers(t, handler, app)
 
 	aliceA := seedAccount(t, app, "oALICE0account0one", &aliceID)
 	aliceB := seedAccount(t, app, "oALICE0account0two", &aliceID)
@@ -174,7 +179,7 @@ func TestLoginAccountScheduleCoversOwnedAccountsOnly(t *testing.T) {
 func TestManualRunStaysScopedToSingleAccount(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	handler, app := newOwnershipQingLongApp(t, server.URL)
-	_, aliceCookie, aliceID := seedConsoleUsers(t, handler)
+	_, aliceCookie, aliceID := seedConsoleUsers(t, handler, app)
 
 	aliceA := seedAccount(t, app, "oALICE0account0one", &aliceID)
 	seedAccount(t, app, "oALICE0account0two", &aliceID)
@@ -201,7 +206,7 @@ func TestManualRunStaysScopedToSingleAccount(t *testing.T) {
 func TestScriptDirVisibilityRestrictsNonAdmin(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	handler, app := newOwnershipQingLongApp(t, server.URL)
-	adminCookie, aliceCookie, aliceID := seedConsoleUsers(t, handler)
+	adminCookie, aliceCookie, aliceID := seedConsoleUsers(t, handler, app)
 	aliceAcc := seedAccount(t, app, "oALICE0account0one", &aliceID)
 
 	// 非管理员不能碰这个设置
@@ -322,7 +327,7 @@ func TestUserTaskSpecCoversEveryAccountInOneTask(t *testing.T) {
 func TestLegacyPerAccountSchedulesAreConsolidated(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	handler, app := newOwnershipQingLongApp(t, server.URL)
-	_, aliceCookie, aliceID := seedConsoleUsers(t, handler)
+	_, aliceCookie, aliceID := seedConsoleUsers(t, handler, app)
 
 	ctx := context.Background()
 	idA := seedAccount(t, app, "oALICE0account0one", &aliceID)

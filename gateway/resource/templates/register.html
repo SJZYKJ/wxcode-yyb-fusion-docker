@@ -15,6 +15,8 @@
     <form id="form">
       <div class="field"><label for="username">用户名</label><input class="input" id="username" autocomplete="username" pattern="[a-z0-9_.-]{3,64}" required><small>3-64 位小写字母、数字、点、下划线或连字符</small></div>
       <div class="field"><label for="displayName">显示名</label><input class="input" id="displayName" autocomplete="name" maxlength="100" required></div>
+      <div class="field"><label for="email">邮箱</label><input class="input" id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" required><small>用于接收注册验证码</small></div>
+      <div class="field"><label for="code">邮箱验证码</label><div class="field-row"><input class="input" id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6 位数字" required><button class="btn" id="sendCode" type="button">发送验证码</button></div><small id="codeHint">验证码 10 分钟内有效，仅可使用一次</small></div>
       <div class="field"><label for="password">密码</label><input class="input" id="password" type="password" autocomplete="new-password" minlength="10" required><small>至少 10 个字符</small></div>
       <div class="form-error" id="error" role="alert"></div>
       <button class="btn primary" id="submit" type="submit">注册并登录</button>
@@ -25,7 +27,72 @@
 </main>
 <script>
 const $=id=>document.getElementById(id);
-$('form').onsubmit=async e=>{e.preventDefault();$('error').textContent='';$('submit').disabled=true;try{const response=await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,displayName:$('displayName').value,password:$('password').value})}),json=await response.json();if(!response.ok||json.code!==0)throw new Error(json.msg||'注册失败');location.href=json.data.next||'/settings'}catch(error){$('error').textContent=error.message;$('submit').disabled=false}};
+const EMAIL_RE=/^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+const COOLDOWN_MS=60000;
+let cooldown=0,cooldownTimer=null;
+
+function validateEmail(){
+  const email=$('email').value.trim();
+  if(!email){return '请填写邮箱'}
+  if(email.length>254){return '邮箱长度不能超过 254 个字符'}
+  if(!EMAIL_RE.test(email)){return '邮箱格式不正确'}
+  return '';
+}
+
+// 发送验证码：成功后进入 60 秒倒计时禁用态（与后端 60 秒冷却一致）。
+function startCooldown(){
+  const button=$('sendCode');
+  const deadline=Date.now()+COOLDOWN_MS;
+  button.disabled=true;
+  const tick=()=>{
+    const left=Math.ceil((deadline-Date.now())/1000);
+    if(left<=0){clearInterval(cooldownTimer);cooldownTimer=null;button.disabled=false;button.textContent='发送验证码';return}
+    button.textContent='重新发送 ('+left+'s)';
+  };
+  tick();
+  clearInterval(cooldownTimer);
+  cooldownTimer=setInterval(tick,250);
+}
+
+$('sendCode').onclick=async()=>{
+  const error=$('error'),hint=$('codeHint');
+  error.textContent='';
+  if(cooldown>Date.now()){return}
+  const problem=validateEmail();
+  if(problem){error.textContent=problem;return}
+  $('sendCode').disabled=true;
+  try{
+    const response=await fetch('/api/auth/email-code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('email').value.trim()})});
+    const json=await response.json();
+    if(!response.ok||json.code!==0){throw new Error(json.msg||'验证码发送失败')}
+    const seconds=(json.data&&json.data.expires_in)||600;
+    hint.textContent='验证码已发送，' + Math.round(seconds/60) + ' 分钟内有效，仅可使用一次';
+    cooldown=Date.now()+COOLDOWN_MS;
+    startCooldown();
+  }catch(failure){
+    error.textContent=failure.message;
+    $('sendCode').disabled=false;
+  }
+};
+
+$('form').onsubmit=async e=>{
+  e.preventDefault();
+  const error=$('error');
+  error.textContent='';
+  const problem=validateEmail();
+  if(problem){error.textContent=problem;return}
+  if(!/^[0-9]{6}$/.test($('code').value.trim())){error.textContent='请输入 6 位数字验证码';return}
+  $('submit').disabled=true;
+  try{
+    const response=await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('username').value,displayName:$('displayName').value,email:$('email').value.trim(),password:$('password').value,code:$('code').value.trim()})});
+    const json=await response.json();
+    if(!response.ok||json.code!==0){throw new Error(json.msg||'注册失败')}
+    location.href=json.data.next||'/settings';
+  }catch(failure){
+    error.textContent=failure.message;
+    $('submit').disabled=false;
+  }
+};
 </script>
 </body>
 </html>

@@ -194,11 +194,15 @@ func TestSQLiteAuthFirstRegistrationAndUnauthorizedAPI(t *testing.T) {
 		ResourceRoot: t.TempDir(),
 		AuthDriver:   "sqlite",
 		AllowNoAuth:  true,
+		// 注册流程要求邮箱验证码，这里给一份配置并把发信替换成内存捕获。
+		SMTP:              testSMTP,
+		AllowRegistration: true,
 	})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
 	}
 	defer app.Close()
+	installCodeCapture(app)
 	handler := app.Handler()
 
 	unauthorized := httptest.NewRecorder()
@@ -208,7 +212,8 @@ func TestSQLiteAuthFirstRegistrationAndUnauthorizedAPI(t *testing.T) {
 	}
 
 	register := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"username":"owner","displayName":"Owner","password":"owner-password"}`))
+	ownerEmail := "owner@example.com"
+	request := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(`{"username":"owner","displayName":"Owner","password":"owner-password","email":"`+ownerEmail+`","code":"`+requestEmailCode(t, handler, app, ownerEmail)+`"}`))
 	request.Header.Set("Content-Type", "application/json")
 	// 首次注册引导只放行内网来源，这里模拟局域网访问。
 	request.RemoteAddr = localTestRemoteAddr

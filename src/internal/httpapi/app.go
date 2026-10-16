@@ -62,6 +62,10 @@ type Config struct {
 	// TrustProxy 对应 YYB_TRUST_PROXY=true：信任 X-Forwarded-For / X-Real-IP。
 	// 默认 false，登录限速等一律以 TCP 对端地址为准，避免伪造请求头绕过限速。
 	TrustProxy bool
+	// SMTP 是注册邮箱验证码的发信配置，全部来自 YYB_SMTP_* 环境变量。
+	// 零值 = 未配置：/api/auth/email-code 返回 503，注册直接拒绝并提示
+	// 「服务端未配置邮件服务，请联系管理员」——不允许静默跳过邮箱验证。
+	SMTP SMTPConfig
 }
 
 type App struct {
@@ -83,6 +87,9 @@ type App struct {
 	refreshMu     sync.Mutex
 	loginMu       sync.Mutex
 	loginAttempts map[string]loginAttempt
+	// emailCode 保存注册邮箱验证码与发送限流（见 emailverify.go）。
+	// auth == nil（广播模式，无账号体系）时保持 nil。
+	emailCode *emailVerifier
 
 	keepAliveCancel context.CancelFunc
 	keepAliveDone   chan struct{}
@@ -170,6 +177,13 @@ func NewApp(cfg Config) (*App, error) {
 		quickSessions:      map[string]quickLoginSession{},
 		loginAttempts:      map[string]loginAttempt{},
 	}
+	// 注册邮箱验证码：只有账号模式才需要。SMTP 未配置时 send 为 nil，
+	// emailVerifier.RegisterCode 会直接拒绝发送（fail-closed，见 emailverify.go）。
+	if cfg.SMTP.Configured() {
+		app.emailCode = newEmailVerifier(newSMTPSender(cfg.SMTP).SendVerificationCode)
+	} else {
+		app.emailCode = newEmailVerifier(nil)
+	}
 	authDriver := strings.ToLower(strings.TrimSpace(cfg.AuthDriver))
 	authDSN := strings.TrimSpace(cfg.AuthDSN)
 	if authDriver == "" && cfg.AuthMySQLDSN != "" {
@@ -236,6 +250,9 @@ func (a *App) Handler() http.Handler {
 
 	// —— 无需浏览器会话：Web 登录 / 注册 / 登出 ——
 	router.Any("/register", gin.WrapF(a.handleRegister))
+	// 注册页没有浏览器会话，发验证码必须挂在这一组；
+	// 它自带邮箱维度的限流（60 秒 1 次 / 1 小时 5 次），见 emailverify.go。
+	router.Any("/api/auth/email-code", gin.WrapF(a.handleEmailCode))
 	router.Any("/logout", gin.WrapF(a.handleLogout))
 
 	// —— 公开取码接口：受 YYB_API_TOKEN 保护 ——
@@ -310,6 +327,11 @@ func (a *App) Handler() http.Handler {
 	router.Use(a.requireAdminSession())
 	router.Any("/users", gin.WrapF(a.handleUsersPage))
 	router.Any("/api/auth/users", gin.WrapF(a.handleUsers))
+	// 注意：批量删除 /api/auth/users/batch-delete 不能在这里单独 Any 注册。
+	// gin 的 radix 树不允许同一路径段上「静态子节点」与 catch-all "*path" 并存，
+	// 注册即 panic（catch-all wildcard '*path' ... conflicts with existing path
+	// segment）。因此批量删除在 handleUserAction 里按路径分派；它仍然位于
+	// requireAdminSession 之后，非管理员照旧在中间件层被 403 挡掉。
 	router.Any("/api/auth/users/*path", gin.WrapF(a.handleUserAction))
 	router.Any("/api/auth/registration", gin.WrapF(a.handleRegistrationSetting))
 	router.Any("/api/qinglong/config", gin.WrapF(a.handleQingLongConfig))

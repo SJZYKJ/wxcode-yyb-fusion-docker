@@ -20,7 +20,20 @@
     .role-badge { display:inline-flex; padding:4px 8px; border-radius:999px; background:var(--surface); color:var(--muted); font-size:12px; }
     .role-badge.admin { background:#fbeef2; color:#9f2444; }
     .empty-users { padding:36px 16px; text-align:center; color:var(--muted); }
-    @media(max-width:720px){.users-toolbar{align-items:stretch;flex-direction:column}.users-toolbar .input{width:100%}.users-table{border:0;background:transparent}.users-table table,.users-table tbody,.users-table tr,.users-table td{display:block;width:100%}.users-table thead{display:none}.users-table tr{margin-bottom:10px;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fff}.users-table td{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border:0}.users-table td::before{content:attr(data-label);color:var(--muted);font-size:12px}.users-table td:first-child{display:block}.users-table td:first-child::before{display:none}}
+    /* 勾选列：固定窄宽，避免表头/行因内容自适应而抖动 */
+    .users-table .col-select { width:44px; text-align:center; }
+    .users-table .col-select input[type="checkbox"] { width:18px; height:18px; cursor:pointer; vertical-align:middle; margin:0; }
+    .users-table tbody tr.selected { background:#f6f8ff; }
+    .users-toolbar-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .users-selection { color:var(--muted); font-size:13px; }
+    /* 键盘可达性：复选框与按钮共用统一的聚焦描边 */
+    .users-table input[type="checkbox"]:focus-visible,.users-toolbar button:focus-visible { outline:2px solid var(--accent,#2f6fed); outline-offset:2px; }
+    @media(max-width:720px){.users-toolbar{align-items:stretch;flex-direction:column}.users-toolbar .input{width:100%}.users-toolbar-actions{justify-content:space-between}.users-toolbar-actions .btn{flex:1 1 auto}.users-table{border:0;background:transparent}.users-table table,.users-table tbody,.users-table tr,.users-table td{display:block;width:100%}.users-table thead{display:none}.users-table tr{margin-bottom:10px;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fff}.users-table td{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border:0}.users-table td::before{content:attr(data-label);color:var(--muted);font-size:12px}
+      /* 窄屏把首列拆成「选择框 + 身份信息」两行，选择框仍完整可见可点 */
+      .users-table td.col-select{display:flex;align-items:center;justify-content:flex-start;gap:9px;padding:0 0 8px;border-bottom:1px solid var(--line);margin-bottom:8px}
+      .users-table td.col-select::before{display:block;content:attr(data-label)}
+      .users-table td.col-select input[type="checkbox"]{width:20px;height:20px;flex:0 0 auto}
+      .users-table td:first-child{display:block}.users-table td:first-child::before{display:none}}
   </style>
 </head>
 <body>
@@ -40,10 +53,14 @@
     </section>
     <div class="users-toolbar">
       <input class="input" id="searchUsers" type="search" placeholder="搜索用户名或显示名" aria-label="搜索用户">
-      <button class="btn primary" id="showCreateUser" type="button">新增用户</button>
+      <div class="users-toolbar-actions">
+        <span class="users-selection" id="selectionCount" role="status" aria-live="polite"></span>
+        <button class="btn danger" id="deleteSelected" type="button" disabled>删除所选</button>
+        <button class="btn primary" id="showCreateUser" type="button">新增用户</button>
+      </div>
     </div>
     <section class="users-table" aria-label="用户列表">
-      <table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="usersBody"></tbody></table>
+      <table><thead><tr><th class="col-select"><input type="checkbox" id="selectAllUsers" aria-label="全选当前列表的用户" title="全选"></th><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="usersBody"></tbody></table>
       <div class="empty-users" id="usersEmpty" hidden>没有符合条件的用户。</div>
     </section>
   </main>
@@ -77,7 +94,7 @@
 
   <script>
     const $ = id => document.getElementById(id);
-    const state = { users: [], resetUser: null };
+    const state = { users: [], resetUser: null, selected: new Set() };
     const escapeHTML = value => { const node = document.createElement("span"); node.textContent = value ?? ""; return node.innerHTML; };
     async function api(path, options = {}) {
       const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
@@ -94,16 +111,80 @@
     function renderUsers() {
       const query = $("searchUsers").value.trim().toLowerCase();
       const users = state.users.filter(user => !query || user.username.toLowerCase().includes(query) || (user.display_name || "").toLowerCase().includes(query));
-      $("usersBody").innerHTML = users.map(user => `<tr><td data-label="用户"><div class="user-identity"><strong>${escapeHTML(user.display_name || user.username)}</strong><small>${escapeHTML(user.username)} · ID ${user.id}</small></div></td><td data-label="角色"><span class="role-badge ${user.role}">${user.role === "admin" ? "管理员" : "普通用户"}</span></td><td data-label="状态">${user.enabled ? "已启用" : "已停用"}</td><td data-label="最近登录">${formatTime(user.last_login_at)}</td><td data-label="操作"><div class="user-actions-row"><button class="btn secondary" data-action="role" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.role === "admin" ? "设为用户" : "设为管理员"}</button><button class="btn secondary" data-action="state" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.enabled ? "停用" : "启用"}</button><button class="btn secondary" data-action="password" data-id="${user.id}">重置密码</button><button class="btn danger" data-action="delete" data-id="${user.id}">删除</button></div></td></tr>`).join("");
+      $("usersBody").innerHTML = users.map(user => `<tr class="${isSelected(user.id) ? "selected" : ""}"><td class="col-select" data-label="选择"><input type="checkbox" data-select-id="${user.id}" aria-label="选择用户 ${escapeHTML(user.display_name || user.username)}" ${isSelected(user.id) ? "checked" : ""}></td><td data-label="用户"><div class="user-identity"><strong>${escapeHTML(user.display_name || user.username)}</strong><small>${escapeHTML(user.username)} · ID ${user.id}</small></div></td><td data-label="角色"><span class="role-badge ${user.role}">${user.role === "admin" ? "管理员" : "普通用户"}</span></td><td data-label="状态">${user.enabled ? "已启用" : "已停用"}</td><td data-label="最近登录">${formatTime(user.last_login_at)}</td><td data-label="操作"><div class="user-actions-row"><button class="btn secondary" data-action="role" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.role === "admin" ? "设为用户" : "设为管理员"}</button><button class="btn secondary" data-action="state" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.enabled ? "停用" : "启用"}</button><button class="btn secondary" data-action="password" data-id="${user.id}">重置密码</button><button class="btn danger" data-action="delete" data-id="${user.id}">删除</button></div></td></tr>`).join("");
       $("usersEmpty").hidden = users.length > 0;
+      syncSelectionUI();
     }
-    async function load() { const [users, registration] = await Promise.all([api("/api/auth/users"), api("/api/auth/registration")]); state.users = users; $("registration").checked = registration.enabled; renderUsers(); }
+    async function load() { const [users, registration] = await Promise.all([api("/api/auth/users"), api("/api/auth/registration")]); state.users = users; $("registration").checked = registration.enabled; pruneSelection(); renderUsers(); syncSelectionUI(); }
+    // ---- 批量删除（勾选后一键删除） ----
+    function isSelected(id) { return state.selected.has(String(id)); }
+    function selectedIds() { return [...state.selected].map(Number).filter(id => Number.isFinite(id)); }
+    // 列表刷新后丢掉已不存在的勾选，避免把「已经不在列表里的 id」再次提交。
+    function pruneSelection() { const alive = new Set(state.users.map(user => String(user.id))); [...state.selected].forEach(id => { if (!alive.has(id)) state.selected.delete(id); }); }
+    function visibleUsers() {
+      const query = $("searchUsers").value.trim().toLowerCase();
+      return state.users.filter(user => !query || user.username.toLowerCase().includes(query) || (user.display_name || "").toLowerCase().includes(query));
+    }
+    // 同步「删除所选」按钮文案/可用态，以及表头全选框的 checked / indeterminate。
+    function syncSelectionUI() {
+      const ids = selectedIds();
+      const button = $("deleteSelected");
+      button.disabled = ids.length === 0;
+      button.textContent = ids.length ? `删除所选 (${ids.length})` : "删除所选";
+      $("selectionCount").textContent = ids.length ? `已选 ${ids.length} 项` : "";
+      const visible = visibleUsers();
+      const selectedVisible = visible.filter(user => isSelected(user.id)).length;
+      const master = $("selectAllUsers");
+      master.checked = visible.length > 0 && selectedVisible === visible.length;
+      // 半选：部分可见行被勾选时必须置 indeterminate，否则表头会误报「全选」。
+      master.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
+      master.disabled = visible.length === 0;
+    }
     async function updateUser(id, role, enabled) { try { await api(`/api/auth/users/${id}/state`, { method: "PUT", body: JSON.stringify({ role, enabled }) }); toast("用户状态已更新"); await load(); } catch (error) { toast(error.message, true); } }
     function openReset(user) { state.resetUser = user; $("resetPasswordForm").reset(); $("resetFeedback").hidden = true; $("resetPasswordCaption").textContent = `为 ${user.display_name || user.username} 设置新密码，保存后该用户现有会话将被注销。`; $("resetPasswordDialog").showModal(); $("resetPassword").focus(); }
     $("showCreateUser").onclick = () => { $("createUserForm").reset(); $("createFeedback").hidden = true; $("createUserDialog").showModal(); $("newUsername").focus(); };
     document.querySelectorAll("[data-close-dialog]").forEach(button => button.onclick = () => button.closest("dialog").close());
     $("createUserForm").onsubmit = async event => { event.preventDefault(); const button = $("createUserSubmit"); button.disabled = true; try { await api("/api/auth/users", { method: "POST", body: JSON.stringify({ username: $("newUsername").value.trim(), display_name: $("newDisplayName").value.trim(), password: $("newPassword").value, role: $("newRole").value }) }); $("createUserDialog").close(); toast("用户已创建"); await load(); } catch (error) { feedback("createFeedback", error.message); } finally { button.disabled = false; } };
     $("resetPasswordForm").onsubmit = async event => { event.preventDefault(); if ($("resetPassword").value !== $("resetPasswordConfirm").value) { feedback("resetFeedback", "两次输入的密码不一致"); return; } const button = $("resetPasswordSubmit"); button.disabled = true; try { await api(`/api/auth/users/${state.resetUser.id}/password`, { method: "PUT", body: JSON.stringify({ password: $("resetPassword").value }) }); $("resetPasswordDialog").close(); toast("密码已重置，该用户会话已注销"); } catch (error) { feedback("resetFeedback", error.message); } finally { button.disabled = false; } };
+    // 行内复选框：只更新选中集合，并同步表头/按钮状态；不触发整表重渲染，
+    // 以免点击时的滚动位置与焦点丢失。
+    $("usersBody").addEventListener("change", event => {
+      const box = event.target.closest("input[data-select-id]");
+      if (!box) return;
+      const id = String(box.dataset.selectId);
+      if (box.checked) state.selected.add(id); else state.selected.delete(id);
+      const row = box.closest("tr");
+      if (row) row.classList.toggle("selected", box.checked);
+      syncSelectionUI();
+    });
+    // 表头全选：只作用于「当前搜索结果里可见的行」，符合用户对筛选后全选的预期。
+    $("selectAllUsers").addEventListener("change", event => {
+      const checked = event.target.checked;
+      visibleUsers().forEach(user => { if (checked) state.selected.add(String(user.id)); else state.selected.delete(String(user.id)); });
+      renderUsers();
+    });
+    $("deleteSelected").onclick = async () => {
+      const ids = selectedIds();
+      if (!ids.length) return;
+      if (!confirm(`确定删除所选 ${ids.length} 个用户吗？此操作无法撤销，删除后这些账号将立即无法登录。`)) return;
+      const button = $("deleteSelected");
+      button.disabled = true;
+      try {
+        const result = await api("/api/auth/users/batch-delete", { method: "POST", body: JSON.stringify({ ids }) });
+        const count = result && typeof result.count === "number" ? result.count : 0;
+        const skipped = (result && result.skipped) || [];
+        state.selected.clear();
+        toast(skipped.length ? `已删除 ${count} 个用户，${skipped.length} 个已跳过` : `已删除 ${count} 个用户`);
+        await load();
+      } catch (error) {
+        // 后端返回 400（含自己 / 删空管理员 / 空 ids / 超上限）时原样展示 msg，
+        // 并保留勾选，便于管理员修正后重试。
+        toast(error.message, true);
+        syncSelectionUI();
+      } finally {
+        button.disabled = selectedIds().length === 0;
+      }
+    };
     $("usersBody").onclick = async event => { const button = event.target.closest("button[data-action]"); if (!button) return; const user = state.users.find(item => String(item.id) === button.dataset.id); if (!user) return; if (button.dataset.action === "role") await updateUser(user.id, user.role === "admin" ? "user" : "admin", user.enabled); if (button.dataset.action === "state") await updateUser(user.id, user.role, !user.enabled); if (button.dataset.action === "password") openReset(user); if (button.dataset.action === "delete" && confirm(`确定删除用户“${user.display_name || user.username}”吗？此操作无法撤销。`)) { try { await api(`/api/auth/users/${user.id}/delete`, { method: "DELETE" }); toast("用户已删除"); await load(); } catch (error) { toast(error.message, true); } } };
     $("registration").onchange = async event => { try { await api("/api/auth/registration", { method: "PUT", body: JSON.stringify({ enabled: event.target.checked }) }); toast(event.target.checked ? "已开放用户注册" : "已关闭用户注册"); } catch (error) { event.target.checked = !event.target.checked; toast(error.message, true); } };
     $("searchUsers").oninput = renderUsers;

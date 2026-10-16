@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -22,11 +23,15 @@ const testAPIToken = "test-api-token-0123456789"
 func newAPITokenApp(t *testing.T, token string) (http.Handler, *App) {
 	t.Helper()
 	t.Setenv("GIN_MODE", "test")
-	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite", APIToken: token})
+	// SMTP：注册流程要求邮箱验证码；这里用可用的测试配置 + 内存捕获发信。
+	// AllowRegistration 一并打开：这些用例验证的是鉴权/归属，不是注册开关，
+	// 而 registerSessionUser 需要能反复注册。
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite", APIToken: token, SMTP: testSMTP, AllowRegistration: true})
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)
 	}
 	t.Cleanup(func() { app.Close() })
+	installCodeCapture(app)
 	return app.Handler(), app
 }
 
@@ -58,14 +63,90 @@ func serveWithHeaders(
 	return rec
 }
 
-// registerSessionUser 注册首个账号（自动成为管理员）并返回其会话 Cookie。
-func registerSessionUser(t *testing.T, h http.Handler) *http.Cookie {
+// testSMTP 是测试用的假 SMTP 配置：只要求 Configured() 为真，不会真的联网。
+var testSMTP = SMTPConfig{
+	Host:     "smtp.example.com",
+	Port:     465,
+	Username: "noreply@example.com",
+	Password: "test-smtp-password",
+	From:     "noreply@example.com",
+	TLS:      true,
+}
+
+// newEmailCodeApp 构造一个「已配置邮件服务」的应用，并把发信替换成内存捕获，
+// 测试里不碰网络。返回的 send 函数可以取到最近一次发出去的验证码。
+func newEmailCodeApp(t *testing.T) (http.Handler, *App, func() string) {
 	t.Helper()
-	rec := serveJSON(t, h, http.MethodPost, "/register", `{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`"}`, nil)
+	t.Setenv("GIN_MODE", "test")
+	// AllowRegistration：这些用例验证的是验证码 / 邮箱逻辑，不涉及注册开关。
+	app, err := NewApp(Config{ResourceRoot: t.TempDir(), AuthDriver: "sqlite", AllowNoAuth: true, SMTP: testSMTP, AllowRegistration: true})
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+	t.Cleanup(func() { app.Close() })
+
+	var mu sync.Mutex
+	last := ""
+	app.emailCode = newEmailVerifier(func(email, code string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		last = code
+		return nil
+	})
+	return app.Handler(), app, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return last
+	}
+}
+
+// registerSessionUser 注册首个账号（自动成为管理员）并返回其会话 Cookie。
+//
+// 注册流程现在要求「邮箱 + 邮箱验证码」，因此这里替换发信函数捕获真实验证码，
+// 走完整的 /api/auth/email-code → /register 链路。
+func registerSessionUser(t *testing.T, h http.Handler, app *App) *http.Cookie {
+	t.Helper()
+	email := "owner@example.com"
+	code := requestEmailCode(t, h, app, email)
+	rec := serveJSON(t, h, http.MethodPost, "/register",
+		`{"username":"owner","displayName":"Owner","password":"`+ownershipAdminPassword+`","email":"`+email+`","code":"`+code+`"}`, nil)
 	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
 		t.Fatalf("POST /register status = %d, want 200/201 (body=%s)", rec.Code, rec.Body.String())
 	}
 	return sessionCookieOf(t, rec)
+}
+
+// requestEmailCode 调 /api/auth/email-code 发码，并返回本次发出的明文验证码。
+// 测试里通过替换 App.emailCode 的 send 函数拿到它（服务端自己只存哈希）。
+func requestEmailCode(t *testing.T, h http.Handler, app *App, email string) string {
+	t.Helper()
+	capture := installCodeCapture(app)
+	rec := serveJSON(t, h, http.MethodPost, "/api/auth/email-code", `{"email":"`+email+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/auth/email-code status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	code := capture()
+	if code == "" {
+		t.Fatalf("POST /api/auth/email-code 未发出任何验证码 (body=%s)", rec.Body.String())
+	}
+	return code
+}
+
+// installCodeCapture 替换 App 的发信函数为「只记录不发送」，返回取码函数。
+func installCodeCapture(app *App) func() string {
+	var mu sync.Mutex
+	last := ""
+	app.emailCode = newEmailVerifier(func(email, code string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		last = code
+		return nil
+	})
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return last
+	}
 }
 
 // AllowNoAuth 是唯一的「关闭鉴权」开关，行为与旧版本一致。
@@ -140,7 +221,7 @@ func TestAPITokenKeepsHealthRouteOpen(t *testing.T) {
 // /login 一址两用：取码分支要令牌，控制台登录分支必须放行，
 // 否则配了 YYB_API_TOKEN 之后浏览器连登录页都提交不了。
 func TestAPITokenBypassesConsoleLogin(t *testing.T) {
-	handler, _ := newAPITokenApp(t, testAPIToken)
+	handler, app := newAPITokenApp(t, testAPIToken)
 
 	// 登录页面本身（GET /login，无 appId）。
 	rec := serveJSON(t, handler, http.MethodGet, "/login", "", nil)
@@ -149,7 +230,7 @@ func TestAPITokenBypassesConsoleLogin(t *testing.T) {
 	}
 
 	// 账号密码登录（POST /login with username）必须无令牌可用。
-	registerSessionUser(t, handler)
+	registerSessionUser(t, handler, app)
 	rec = serveJSON(t, handler, http.MethodPost, "/login",
 		`{"username":"owner","password":"`+ownershipAdminPassword+`"}`, nil)
 	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
@@ -181,8 +262,8 @@ func TestAPITokenBypassesConsoleLogin(t *testing.T) {
 }
 
 func TestAPITokenAcceptsBrowserConsoleSession(t *testing.T) {
-	handler, _ := newAPITokenApp(t, testAPIToken)
-	cookie := registerSessionUser(t, handler)
+	handler, app := newAPITokenApp(t, testAPIToken)
+	cookie := registerSessionUser(t, handler, app)
 
 	// 工作台「调用配置」在浏览器里带会话调用 /wxapp/*、/wx/code，
 	// 没有携带令牌，必须放行，否则 Web 界面会被自己的令牌拦住。

@@ -112,6 +112,38 @@ jobs:
             echo "  ok  $f  ($(du -h "$f" | cut -f1))"
           done
 
+      - name: 校验面板资源（templates/static）与 src 一致
+        # ⚠️ 回归防护：Dockerfile 只 COPY gateway/resource，而面板前端是在
+        # src/resource 下开发的，两者靠人工执行
+        #     cp -r src/resource/templates/. gateway/resource/templates/
+        # 同步（见 build-gateway.sh 末尾的提示）。这一步漏做时镜像里跑的是
+        # 旧页面，接口是新的、页面是旧的，而且构建会「成功」——v16 就踩过这个坑：
+        # 登录页停留在旧版、注册页没有邮箱验证码输入框。
+        # 因此这里在构建前强制比对，不一致直接失败并给出修复命令。
+        # 用 diff -r 逐字节比较目录，不要用 "cp 之后再 git diff"：
+        #   · 顺序颠倒的陷阱：先 cp 就已经把 gateway 刷成与 src 一致，
+        #     要检测的差异在校验执行前被自己抹掉了，必然通过；
+        #   · EOL 陷阱：.gitattributes 的 * text=auto + *.html eol=lf 会让
+        #     git diff 先做换行符归一化再比较，CRLF 工作树与 LF index 之间
+        #     的真实内容差异可能被判为「无变化」。
+        # diff -r 直接比字节，与 git 的换行符魔法无关。
+        run: |
+          set -euo pipefail
+          status=0
+          for pair in "templates" "static"; do
+            if ! diff -r -q "src/resource/$pair" "gateway/resource/$pair"; then
+              echo "::error::gateway/resource/$pair 与 src/resource/$pair 不一致 —— 镜像会打包旧页面。"
+              status=1
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::请在本机执行下面两条命令同步后提交："
+            echo "::error::  cp -r src/resource/templates/. gateway/resource/templates/"
+            echo "::error::  cp -r src/resource/static/.    gateway/resource/static/"
+            exit 1
+          fi
+          echo "  ok  gateway/resource 与 src/resource 逐字节一致"
+
       - name: 准备 QEMU（用于跨架构构建）
         uses: docker/setup-qemu-action@v3
 
