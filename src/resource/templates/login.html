@@ -6,52 +6,200 @@
   <title>登录 - YYB Go</title>
   <link rel="stylesheet" href="/static/css/auth.css">
   <style>
-    /* 居中卡片式登录页（v13 重构版） */
-    body.auth-split { background: radial-gradient(1200px 800px at 15% -10%, #eef0ff 0%, transparent 55%), radial-gradient(1000px 700px at 110% 110%, #eaf4fb 0%, transparent 50%), #f5f5fb; }
-    .auth-card-layout { min-height: 100vh; display: grid; place-items: center; padding: 40px 20px; }
-    .auth-card { width: min(440px, 100%); background: #fff; border: 1px solid #e6e8f4; border-radius: 20px; box-shadow: 0 24px 60px rgba(60, 60, 140, .12), 0 2px 8px rgba(60, 60, 140, .05); overflow: hidden; }
-    .auth-card-brand { display: flex; align-items: center; gap: 12px; padding: 26px 30px 0; }
-    .auth-card-brand .brand-mark { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: linear-gradient(135deg, #6366e8, #4c3fd0); color: #fff; font-weight: 800; font-size: 19px; box-shadow: 0 6px 16px rgba(84, 87, 214, .35); }
-    .auth-card-brand .brand-name { font-size: 17px; font-weight: 750; color: #23233c; }
-    .auth-card-brand .brand-meta { font-size: 12px; color: #8a8da8; margin-top: 2px; }
-    .auth-card-body { padding: 24px 30px 30px; }
-    .auth-card-body h1 { margin: 0 0 6px; font-size: 24px; font-weight: 760; color: #23233c; letter-spacing: 0; }
-    .auth-card-body .lead { margin: 0 0 24px; color: #6b6d85; font-size: 14px; }
-    .auth-card .field { margin-bottom: 18px; }
-    .auth-card .input { height: 46px; border-radius: 12px; }
-    .auth-card .btn.primary { height: 46px; border-radius: 12px; font-size: 15px; }
-    .auth-card-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; padding-top: 18px; border-top: 1px solid #eef0f7; }
-    .auth-card-foot a { color: #5457d6; font-weight: 650; text-decoration: none; }
+    /* ============================================================
+       登录页（v16 视觉重构）
+       ------------------------------------------------------------
+       旧版的问题（实测：视口 654px 高、内容却 1017px）：
+         .auth-card-layout 用 place-items:center 居中，但右栏的版本更新很长，
+         把 grid 行撑到 1017px；于是 500px 高的卡片被"居中"到了 1017px 的行里，
+         落在 y=258 —— 用户打开页面看到的是一大片空白，登录框漂在下面要滚动才够得到。
+       新版的思路：
+         · 用 flex 两栏 + 各自独立滚动：左栏卡片始终相对【视口】垂直居中，
+           右栏内容再多也不会把左栏推下去；
+         · 页面本身不再整体滚动（overflow:hidden），消除"空白 + 滚动"的观感；
+         · 视觉上换成更干净的浅色体系：柔和渐变底、卡片更轻的描边与双层阴影、
+           输入框聚焦有主色光圈、按钮有细微抬升反馈、内容淡入。
+       ============================================================ */
+    body.auth-split {
+      background:
+        radial-gradient(1100px 620px at 8% -12%, #e8ebff 0%, transparent 58%),
+        radial-gradient(900px 560px at 108% 112%, #e6f2fb 0%, transparent 52%),
+        linear-gradient(180deg, #f7f8fd 0%, #f3f4fa 100%);
+      /* 登录页固定为视口高度：两栏内部各自滚动，页面不再出现整页滚动条 */
+      overflow: hidden;
+    }
+    .auth-card-layout {
+      min-height: 100vh; height: 100vh;
+      display: flex; align-items: stretch;
+      padding: 0;
+      max-width: none; margin: 0;
+    }
+    /* ---- 左栏：登录卡片，相对视口垂直居中 ---- */
+    /* 用 margin:auto 做居中，而不是容器的 align-items:center：
+       卡片比视口高时（注册页字段多就会这样），align-items:center 会把顶部溢出到
+       容器上方变成滚不到的死区；margin:auto 在有空间时居中、空间不足时自然顶对齐。 */
+    .auth-card-col {
+      flex: 1 1 auto;
+      display: flex;
+      justify-content: center;
+      padding: 32px 24px;
+      min-width: 0;
+      overflow-y: auto;
+    }
+    .auth-card { margin: auto 0; }
+    .auth-card {
+      width: min(420px, 100%);
+      background: #fff;
+      border: 1px solid #eaecf6;
+      border-radius: 22px;
+      box-shadow:
+        0 1px 2px rgba(28, 30, 70, .04),
+        0 12px 32px rgba(48, 52, 120, .08),
+        0 32px 72px rgba(48, 52, 120, .07);
+      overflow: hidden;
+      animation: cardIn .42s cubic-bezier(.22, .8, .3, 1) both;
+    }
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(14px) scale(.985); }
+      to   { opacity: 1; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .auth-card { animation: none; }
+    }
+    .auth-card-brand { display: flex; align-items: center; gap: 13px; padding: 30px 34px 0; }
+    .auth-card-brand .brand-mark {
+      width: 44px; height: 44px; border-radius: 13px;
+      display: grid; place-items: center;
+      background: linear-gradient(135deg, #6d70f0 0%, #4a3ecf 100%);
+      color: #fff; font-weight: 800; font-size: 20px;
+      box-shadow: 0 8px 20px rgba(84, 87, 214, .32);
+    }
+    .auth-card-brand .brand-name { font-size: 17px; font-weight: 760; color: #1f2136; letter-spacing: -.01em; }
+    .auth-card-brand .brand-meta { font-size: 12px; color: #8b8ea8; margin-top: 3px; }
+    .auth-card-body { padding: 26px 34px 32px; }
+    .auth-card-body h1 { margin: 0 0 7px; font-size: 25px; font-weight: 770; color: #1f2136; letter-spacing: -.02em; }
+    .auth-card-body .lead { margin: 0 0 26px; color: #70738c; font-size: 14px; line-height: 1.6; }
+    .auth-card .field { margin-bottom: 17px; }
+    .auth-card .field label { font-size: 13px; font-weight: 660; color: #3a3d57; }
+    .auth-card .input {
+      height: 48px; border-radius: 13px;
+      border: 1px solid #e3e5f2; background: #fcfcfe;
+      padding: 0 14px; font-size: 14.5px;
+      transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+    }
+    .auth-card .input:hover { border-color: #d5d8ec; }
+    .auth-card .input:focus {
+      background: #fff; border-color: #6d70f0;
+      box-shadow: 0 0 0 4px rgba(109, 112, 240, .13);
+    }
+    .auth-card .btn.primary {
+      height: 48px; border-radius: 13px; font-size: 15px; font-weight: 700;
+      background: linear-gradient(135deg, #6366e8 0%, #4a3ecf 100%);
+      box-shadow: 0 6px 18px rgba(84, 87, 214, .28);
+      transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
+    }
+    .auth-card .btn.primary:hover { filter: brightness(1.06); box-shadow: 0 9px 24px rgba(84, 87, 214, .34); }
+    .auth-card .btn.primary:active { transform: translateY(1px); }
+    .auth-card .btn.primary:disabled { filter: grayscale(.35) opacity(.75); box-shadow: none; cursor: default; }
+    .auth-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 22px; padding-top: 18px; border-top: 1px solid #f0f1f8; }
+    .auth-card-foot a { color: #5457d6; font-weight: 660; text-decoration: none; }
     .auth-card-foot a:hover { text-decoration: underline; }
-    .auth-card .auth-meta { margin-top: 0; border-top: 0; padding-top: 0; }
+    /* 页脚 meta 行：显式给 gap，避免依赖 auth.css 的层叠顺序导致「v16·个人主页」黏在一起 */
+    .auth-card .auth-meta {
+      margin-top: 0; border-top: 0; padding-top: 0;
+      display: flex; align-items: center; gap: 8px;
+      color: #8b8ea8; font-size: 12px;
+    }
+    .auth-card .auth-meta b { color: #1f2136; font-weight: 700; }
+    .auth-card .auth-meta .meta-sep { color: #c9cce0; }
+    .auth-card .auth-meta a { color: #8b8ea8; text-decoration: none; border-bottom: 1px dashed transparent; transition: color .15s ease, border-color .15s ease; }
+    .auth-card .auth-meta a:hover { color: #5457d6; border-bottom-color: #b9bce6; }
+    .auth-card .form-error { margin: 0 0 14px; font-size: 13px; color: #c0392b; }
+    /* 密码可见性切换：加大点击热区，悬停有明显的状态反馈 */
+    .auth-card .password-wrap { position: relative; }
+    .auth-card .password-wrap .input { padding-right: 48px; }
+    .auth-card .reveal {
+      position: absolute; right: 5px; top: 5px;
+      width: 38px; height: 38px; border: 0; border-radius: 10px;
+      background: transparent; color: #9a9db5; cursor: pointer;
+      display: grid; place-items: center; font-size: 15px;
+      transition: color .15s ease, background .15s ease;
+    }
+    .auth-card .reveal:hover { color: #5457d6; background: #f2f3fd; }
+    .auth-card .reveal:focus-visible { outline: 2px solid #6d70f0; outline-offset: 1px; }
+
+    /* ---- 右栏：产品说明 + 版本更新，独立滚动 ---- */
     .auth-feature-strip { display: none; }
+    .auth-info-col {
+      display: none;
+      flex: 0 1 560px;
+      overflow-y: auto;
+      padding: 56px 56px 56px 40px;
+      color: #1f2136;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(120, 124, 170, .28) transparent;
+    }
+    .auth-info-col::-webkit-scrollbar { width: 8px; }
+    .auth-info-col::-webkit-scrollbar-thumb { background: rgba(120, 124, 170, .24); border-radius: 8px; }
+    .auth-info-inner { max-width: 460px; margin: 0 auto; }
+    .auth-info-col h2 {
+      font-size: 27px; font-weight: 770; line-height: 1.34;
+      letter-spacing: -.02em; margin: 0 0 14px; color: #1f2136;
+    }
+    .auth-info-col > .auth-info-inner > p { color: #6b6e88; line-height: 1.75; margin: 0 0 30px; font-size: 14px; }
+    .feature-grid { display: grid; gap: 16px; }
+    .feature-item { display: flex; gap: 13px; align-items: flex-start; }
+    .feature-item .fi-icon {
+      width: 36px; height: 36px; flex: 0 0 auto; border-radius: 11px;
+      display: grid; place-items: center;
+      background: linear-gradient(135deg, #eef0ff, #e6e9ff);
+      color: #5457d6; font-weight: 760; font-size: 14px;
+    }
+    .feature-item strong { display: block; font-size: 14px; margin-bottom: 3px; color: #262943; }
+    .feature-item p { margin: 0; font-size: 13px; color: #6b6e88; line-height: 1.6; }
+    /* ---- 版本更新 ---- */
+    .card-changelog { margin-top: 34px; padding-top: 26px; border-top: 1px solid #e4e6f3; }
+    .changelog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+    .changelog-head h3 { font-size: 14px; margin: 0; color: #1f2136; font-weight: 730; letter-spacing: .3px; }
+    .changelog-now { font-size: 12px; color: #8b8ea8; white-space: nowrap; }
+    .changelog-now b { color: #5457d6; font-weight: 750; }
+    .changelog-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 15px; }
+    .changelog-list li { display: flex; align-items: flex-start; gap: 12px; }
+    .changelog-tag {
+      flex: 0 0 auto; min-width: 36px; margin-top: 2px; padding: 3px 8px;
+      border-radius: 999px; background: #eef0ff; color: #5457d6;
+      font-size: 11px; font-weight: 750; text-align: center; letter-spacing: .2px;
+    }
+    .changelog-list li:first-child .changelog-tag {
+      background: linear-gradient(135deg, #6366e8, #4a3ecf); color: #fff;
+      box-shadow: 0 3px 10px rgba(84, 87, 214, .3);
+    }
+    .changelog-body b { display: block; font-size: 13px; color: #262943; margin-bottom: 4px; font-weight: 700; }
+    .changelog-body p { margin: 0; font-size: 12.5px; line-height: 1.68; color: #6b6e88; }
+
+    /* ---- 平板/窄屏：隐藏右栏，只留居中的登录卡片 ---- */
+    @media (max-width: 899px) {
+      body.auth-split { overflow: auto; }
+      .auth-card-layout { height: auto; min-height: 100vh; }
+      .auth-card-col { min-height: 100vh; }
+      .auth-info-col { display: none; }
+    }
+    /* ---- 宽屏：两栏并排 ---- */
     @media (min-width: 900px) {
-      .auth-card-layout { grid-template-columns: 1fr 1fr; gap: 48px; max-width: 960px; margin: 0 auto; }
-      .auth-card { grid-column: 1; }
-      .auth-feature-strip { display: block; grid-column: 2; color: #23233c; }
-      .auth-feature-strip h2 { font-size: 28px; font-weight: 760; line-height: 1.3; margin: 0 0 14px; }
-      .auth-feature-strip > p { color: #6b6d85; line-height: 1.7; margin: 0 0 26px; }
-      .feature-grid { display: grid; gap: 14px; }
-      .feature-item { display: flex; gap: 12px; align-items: flex-start; }
-      .feature-item .fi-icon { width: 34px; height: 34px; flex: 0 0 auto; border-radius: 10px; display: grid; place-items: center; background: #eef0ff; color: #5457d6; font-weight: 700; }
-      .feature-item strong { display: block; font-size: 14px; margin-bottom: 2px; }
-      .feature-item p { margin: 0; font-size: 13px; color: #6b6d85; line-height: 1.5; }
-      /* 版本更新（浅色主题适配） */
-      .card-changelog { margin-top: 30px; padding-top: 22px; border-top: 1px solid #e3e5f2; }
-      .changelog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
-      .changelog-head h3 { font-size: 14px; margin: 0; color: #23233c; letter-spacing: .4px; }
-      .changelog-now { font-size: 12px; color: #8a8da8; white-space: nowrap; }
-      .changelog-now b { color: #23233c; font-weight: 700; }
-      .changelog-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
-      .changelog-list li { display: flex; align-items: flex-start; gap: 11px; }
-      .changelog-tag { flex: 0 0 auto; min-width: 34px; margin-top: 2px; padding: 2px 7px; border-radius: 999px; background: #eef0ff; color: #5457d6; font-size: 11px; font-weight: 700; text-align: center; letter-spacing: .3px; }
-      .changelog-body b { display: block; font-size: 13px; color: #23233c; margin-bottom: 3px; }
-      .changelog-body p { margin: 0; font-size: 12.5px; line-height: 1.65; color: #6b6d85; }
+      .auth-info-col { display: block; }
+      .auth-card-col { flex: 1 1 auto; }
+    }
+    /* 超宽屏：把整体收在一个舒适宽度内，避免两栏被拉得过散 */
+    @media (min-width: 1500px) {
+      .auth-card-layout { justify-content: center; gap: 24px; }
+      .auth-card-col { flex: 0 0 620px; }
+      .auth-info-col { flex: 0 0 560px; }
     }
   </style>
 </head>
 <body class="auth-split">
 <main class="auth-card-layout">
+  <div class="auth-card-col">
   <section class="auth-card">
     <div class="auth-card-brand"><span class="brand-mark">Y</span><div><div class="brand-name">YYB Go Enhanced</div><div class="brand-meta">微信协议与自动化控制台</div></div></div>
     <div class="auth-card-body">
@@ -69,9 +217,11 @@
       </div>
     </div>
   </section>
+  </div>
 
-  <section class="auth-feature-strip">
-    <h2>账号、协议和任务，都在一个受控入口中。</h2>
+  <aside class="auth-info-col">
+    <div class="auth-info-inner">
+    <h2>账号、协议和任务，<br>都在一个受控入口中。</h2>
     <p>登录后按权限管理微信账号、面板连接与脚本运行。协议接口继续为青龙等自动化调用方独立提供。</p>
     <div class="feature-grid">
       <div class="feature-item"><span class="fi-icon">账</span><div><strong>多账号隔离</strong><p>每人只看到自己扫码添加的微信，管理员统一管理。</p></div></div>
@@ -88,7 +238,8 @@
         <li><span class="changelog-tag">v10</span><div class="changelog-body"><b>账号隔离分两档 + 脚本目录可见范围</b><p>「运行」只跑选中的那一个 code 账号；打开「定时」后按网关登录账号隔离，同一脚本只建一条任务。管理员可指定非管理员只能看到放行目录下的脚本。</p></div></li>
       </ol>
     </div>
-  </section>
+    </div>
+  </aside>
 </main>
 <script>
 const $=id=>document.getElementById(id);
