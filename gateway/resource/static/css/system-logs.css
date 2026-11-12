@@ -1,0 +1,77 @@
+/* 系统日志视图（runs 页的「调用记录」与「系统日志」两个视图共用） */
+.system-logs { display: grid; gap: 12px; min-width: 0; }
+
+.system-logs .log-toolbar,
+.system-logs .log-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.system-logs .log-status { margin: 0; color: var(--muted); font-size: 12.5px; }
+.system-logs .log-toolbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.system-logs .live-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-2); }
+.system-logs .live-toggle input { accent-color: var(--primary); }
+
+.system-logs .log-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.system-logs .log-filters label { display: grid; gap: 5px; color: var(--muted); font-size: 11.5px; }
+.system-logs .log-filters .input { min-height: 34px; font-size: 12.5px; }
+.system-logs .log-filter-actions { display: flex; gap: 8px; }
+.system-logs .log-error { margin: 0; }
+
+.system-logs .log-table-wrap { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: auto; background: var(--surface); }
+.system-logs .log-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.system-logs .log-table th {
+  position: sticky; top: 0; z-index: 1;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; text-align: left; white-space: nowrap;
+}
+.system-logs .log-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--ink-2); vertical-align: top; }
+.system-logs .log-table tr:last-child td { border-bottom: 0; }
+.system-logs .log-table time { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.system-logs .log-badge {
+  display: inline-flex; align-items: center; height: 21px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface-3); color: var(--muted);
+  font-size: 11px; white-space: nowrap;
+}
+.system-logs .log-badge[data-level="error"] { color: var(--danger); border-color: rgba(240, 68, 56, 0.34); background: var(--danger-soft); }
+.system-logs .log-badge[data-level="warn"] { color: var(--accent); border-color: rgba(245, 165, 36, 0.34); background: var(--accent-soft); }
+.system-logs .log-badge[data-level="info"] { color: var(--info); border-color: rgba(56, 189, 248, 0.3); background: var(--info-soft); }
+.system-logs .log-account { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); }
+.system-logs .log-channel { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 10.5px; }
+.system-logs .log-rejections { display: block; margin-top: 4px; color: var(--danger); font-size: 11.5px; }
+.system-logs .log-detail { margin-top: 5px; }
+.system-logs .log-detail summary { cursor: pointer; color: var(--primary); font-size: 11.5px; }
+.system-logs .log-detail dl {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px;
+  margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-2);
+  font-size: 11.5px;
+}
+.system-logs .log-detail dt { color: var(--muted); }
+.system-logs .log-detail dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
+.system-logs .log-empty { text-align: center; color: var(--muted); padding: 26px 12px !important; }
+.system-logs .log-row:hover td { background: var(--surface-2); }
+.system-logs .log-footnote { margin: 0; color: var(--faint); font-size: 11.5px; }
+
+@media (max-width: 900px) {
+  .system-logs .log-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .system-logs .log-table th:nth-child(3),
+  .system-logs .log-table td:nth-child(3) { display: none; }
+}
+@media (max-width: 560px) {
+  .system-logs .log-filters { grid-template-columns: minmax(0, 1fr); }
+}

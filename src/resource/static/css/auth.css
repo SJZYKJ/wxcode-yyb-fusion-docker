@@ -1,59 +1,362 @@
-:root{--bg:#f5f5fb;--surface:#fff;--ink:#19212b;--muted:#647181;--line:#e0e1ee;--brand:#5457d6;--brand-dark:#4245b8;--danger:#b42318;--ok:#18794e;--focus:#5457d6;--radius:12px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg)}*{box-sizing:border-box}body{margin:0;min-height:100vh;color:var(--ink);background:var(--bg);font-size:14px;letter-spacing:0}button,input,select{font:inherit;letter-spacing:0}.auth-layout{min-height:100vh;display:grid;grid-template-columns:minmax(320px,480px) 1fr}.auth-panel{display:flex;align-items:center;justify-content:center;padding:40px;background:var(--surface);border-right:1px solid var(--line)}.auth-main{width:min(360px,100%)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:42px}.brand-mark{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:linear-gradient(135deg,#6366e8,#4c3fd0);color:white;font-weight:800;font-size:17px;box-shadow:0 4px 14px rgba(84,87,214,.35)}.brand-name{font-size:16px;font-weight:750}.brand-meta{color:var(--muted);font-size:12px;margin-top:2px}.auth-main h1{font-size:26px;margin:0 0 8px}.lead{color:var(--muted);line-height:1.6;margin:0 0 28px}.field{display:grid;gap:7px;margin-bottom:16px}.field label{font-weight:650}.input{width:100%;height:42px;border:1px solid var(--line);border-radius:10px;padding:0 12px;color:var(--ink);background:white;outline:none}.input:focus{border-color:var(--focus);box-shadow:0 0 0 3px rgba(84,87,214,.16)}.password-wrap{position:relative}.password-wrap .input{padding-right:46px}.reveal{position:absolute;right:4px;top:4px;width:34px;height:34px;border:0;background:transparent;color:var(--muted);cursor:pointer}.btn{height:42px;border:1px solid transparent;border-radius:10px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-weight:680;cursor:pointer;text-decoration:none}.btn.primary{width:100%;background:var(--brand);color... (line truncated to 2000 chars)
-/* 注：右栏 .auth-context 已由 align-items:flex-end 改为 flex-start + .context-inner{margin-top:auto}。
-   视觉上仍是「内容贴底」，但内容高于视口时（矮窗口）子项从顶部开始、可正常滚动；
-   原来的 flex-end 在内容超高时会把顶部溢出到容器上方，滚动条够不到那部分。 */
-/* ---- 登录页：版本更新记录与个人主页入口（对应 templates/login.html） ---- */
-.auth-meta{margin-top:14px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:12px}.auth-meta b{color:var(--ink);font-weight:700}.auth-meta .meta-sep{color:#c6c9e0}.auth-meta a{color:var(--muted);text-decoration:none;border-bottom:1px dashed #c6c9e0}.auth-meta a:hover{color:var(--brand);border-bottom-color:var(--brand)}
-.auth-context{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.25) transparent}
-.changelog{margin-top:26px;padding-top:20px;border-top:1px solid rgba(255,255,255,.14)}
-.changelog-head{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:14px}
-.changelog-head h3{font-size:14px;margin:0;color:#fff;letter-spacing:.5px}
-.changelog-now{font-size:12px;color:#aeb9c5;white-space:nowrap}
-.changelog-now b{color:#fff;font-weight:700}
-.changelog-list{list-style:none;margin:0;padding:0;display:grid;gap:13px}
-.changelog-list li{display:flex;align-items:flex-start;gap:11px}
-.changelog-tag{flex:0 0 auto;min-width:32px;margin-top:2px;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,.13);color:#e8edf2;font-size:11px;font-weight:700;text-align:center;letter-spacing:.3px}
-.changelog-body b{display:block;font-size:13px;color:#fff;margin-bottom:3px}
-.auth-context .changelog-body p{margin:0;font-size:12.5px;line-height:1.68;color:#b6c2cd}
-.auth-context .changelog-more{margin:15px 0 0;font-size:12px;line-height:1.7;color:#95a2af}
-.changelog-more b{color:#c7d0d9;font-weight:700}
-.context-foot{margin-top:24px;padding-top:16px;border-top:1px solid rgba(255,255,255,.14);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.context-foot-label{font-size:12px;color:#8f9ba8}
-.context-home{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid rgba(255,255,255,.22);border-radius:999px;color:#fff;font-size:12.5px;font-weight:650;text-decoration:none;transition:background .15s ease,border-color .15s ease}
-.context-home:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.42)}
-.context-home-ext{font-size:11px;opacity:.75}
-@media(min-width:761px){.auth-context{max-height:100vh;overflow-y:auto}}
-.auth-context::-webkit-scrollbar{width:8px}.auth-context::-webkit-scrollbar-track{background:transparent}.auth-context::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:4px}
-/* 平板竖屏等中等宽度：左栏固定 480px 会把右栏挤到 230px 左右，一行只放得下 8 个字。
-   这里把左栏收紧到 400px、右栏内边距减到 32px，右栏正文宽度可回到 350px 以上。 */
-@media(min-width:761px) and (max-width:1080px){.auth-layout{grid-template-columns:minmax(300px,400px) 1fr}.auth-context{padding:40px 32px}.auth-context h2{font-size:23px;line-height:1.32}.context-inner{max-width:100%}}
+/* =============================================================================
+   auth.css — 登录 / 注册与无壳独立页的视觉层（v17「青石墨」）
+   -----------------------------------------------------------------------------
+   设计语言与 platform.css 一致：深色优先、青绿主色 + 琥珀强调、玻璃拟态卡片、
+   14px 圆角、系统字体。明暗两套配色由 <html data-theme="dark|light"> 与
+   prefers-color-scheme 共同决定；主题值仍存在 localStorage 的 "yyb-skin" 里，
+   与壳层（platform.js）共用同一个开关。
+   ========================================================================== */
 
-/* ============================================================
-   控制台功能页统一升级（settings / users 等，v13 重构）
-   ============================================================ */
-.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:22px;box-shadow:0 1px 3px rgba(25,31,40,.05),0 4px 16px rgba(25,31,40,.04);transition:box-shadow .18s ease}
-.card:hover{box-shadow:0 2px 6px rgba(25,31,40,.07),0 8px 24px rgba(25,31,40,.06)}
-.card h2{margin:0;font-size:16px;font-weight:730;letter-spacing:0}
-.page-title h1{margin:0;font-size:22px;font-weight:760;letter-spacing:0}
-.page-title p{margin:6px 0 0;color:var(--muted)}
-.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
-.description{color:var(--muted);margin:6px 0 18px;line-height:1.6;font-size:13px}
-.notice{border:1px solid var(--line);background:#f7f7fd;border-radius:10px;padding:12px 14px;color:var(--muted);margin-bottom:16px;font-size:13px}
-.notice.ok{background:var(--success-soft, #edf8f1);border-color:#cde7d6;color:var(--ok, #18794e)}
-.btn{height:42px;border:1px solid transparent;border-radius:10px;padding:0 16px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-weight:680;cursor:pointer;text-decoration:none;transition:background .15s ease,box-shadow .15s ease,transform .15s ease}
-.btn:active{transform:translateY(1px)}
-.btn.primary{width:100%;background:var(--brand);color:#fff;box-shadow:0 2px 8px rgba(84,87,214,.25)}
-.btn.primary:hover{background:var(--brand-dark);box-shadow:0 3px 12px rgba(84,87,214,.32)}
-.btn.secondary{border-color:var(--line);background:#fff}
-.btn.secondary:hover{background:#f5f6f8}
-.btn.danger{color:var(--danger);border-color:var(--line);background:#fff}
-.btn.danger:hover{background:#fdf1f1;border-color:#e5c9c9}
-.session-list{display:grid;gap:10px;margin-top:16px}
-.session{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:14px}
-.session strong{display:block;font-size:14px}
-.session small{display:block;color:var(--muted);margin-top:3px}
+:root {
+  color-scheme: dark;
 
-/* 注册页的「验证码 + 发送按钮」同行布局（register.html 的 .field-row）。 */
-.field-row{display:flex;gap:8px;align-items:center}
-.field-row .input{flex:1;min-width:0}
-.field-row .btn{flex:0 0 auto;white-space:nowrap}
+  --bg: #0B1014;
+  --bg-2: #111A1F;
+  --bg-glow-a: rgba(15, 182, 166, 0.16);
+  --bg-glow-b: rgba(245, 165, 36, 0.10);
+  --surface: rgba(19, 30, 36, 0.78);
+  --surface-2: rgba(24, 37, 44, 0.72);
+  --surface-3: rgba(31, 47, 55, 0.86);
+  --line: rgba(126, 163, 172, 0.16);
+  --line-strong: rgba(126, 163, 172, 0.3);
+  --ink: #E8F1F2;
+  --ink-2: #C3D5D7;
+  --muted: #849DA2;
+  --faint: #64818A;
+  --primary: #0FB6A6;
+  --primary-2: #0E7C74;
+  --primary-ink: #04211F;
+  --primary-soft: rgba(15, 182, 166, 0.12);
+  --accent: #F5A524;
+  --accent-soft: rgba(245, 165, 36, 0.12);
+  --danger: #F04438;
+  --danger-soft: rgba(240, 68, 56, 0.12);
+  --success: #2ED3A0;
+  --radius: 16px;
+  --radius-sm: 12px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  --shadow: 0 28px 60px -40px rgba(0, 0, 0, 0.9);
+  --ring: 0 0 0 3px rgba(15, 182, 166, 0.28);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #F2F6F6;
+    --bg-2: #E9F1F1;
+    --bg-glow-a: rgba(15, 182, 166, 0.12);
+    --bg-glow-b: rgba(245, 165, 36, 0.12);
+    --surface: rgba(255, 255, 255, 0.9);
+    --surface-2: rgba(246, 250, 250, 0.94);
+    --surface-3: #EDF4F4;
+    --line: rgba(12, 34, 40, 0.1);
+    --line-strong: rgba(12, 34, 40, 0.2);
+    --ink: #0C1618;
+    --ink-2: #22343A;
+    --muted: #5A7278;
+    --faint: #7C9298;
+    --primary: #0E9C90;
+    --primary-2: #0B746C;
+    --primary-ink: #F2FEFC;
+    --primary-soft: rgba(14, 156, 144, 0.1);
+    --accent: #B8730A;
+    --accent-soft: rgba(245, 165, 36, 0.14);
+    --danger: #D92D20;
+    --danger-soft: rgba(217, 45, 32, 0.09);
+    --success: #0E8F6B;
+    --shadow: 0 24px 50px -38px rgba(12, 34, 40, 0.5);
+    --ring: 0 0 0 3px rgba(14, 156, 144, 0.22);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F2F6F6;
+  --bg-2: #E9F1F1;
+  --bg-glow-a: rgba(15, 182, 166, 0.12);
+  --bg-glow-b: rgba(245, 165, 36, 0.12);
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-2: rgba(246, 250, 250, 0.94);
+  --surface-3: #EDF4F4;
+  --line: rgba(12, 34, 40, 0.1);
+  --line-strong: rgba(12, 34, 40, 0.2);
+  --ink: #0C1618;
+  --ink-2: #22343A;
+  --muted: #51686E;
+  --faint: #5A7076;
+  --primary: #0B8378;
+  --primary-2: #086A62;
+  --primary-ink: #FFFFFF;
+  --primary-soft: rgba(11, 131, 120, 0.1);
+  --accent: #A25F00;
+  --accent-soft: rgba(245, 165, 36, 0.18);
+  --danger: #C4271B;
+  --danger-soft: rgba(196, 39, 27, 0.09);
+  --success: #0B7C5C;
+  --shadow: 0 24px 50px -38px rgba(12, 34, 40, 0.5);
+  --ring: 0 0 0 3px rgba(11, 131, 120, 0.22);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---------- 登录 / 注册双栏骨架 ---------- */
+body.auth-split {
+  background:
+    radial-gradient(1080px 620px at 8% -12%, var(--bg-glow-a), transparent 62%),
+    radial-gradient(760px 520px at 104% 6%, var(--bg-glow-b), transparent 58%),
+    var(--bg);
+  overflow: hidden;
+}
+
+/* 左：品牌 + 说明 + 版本更新；右：表单卡。
+   DOM 顺序保持「表单在前」，窄屏堆叠时表单先出现；宽屏用 order 把信息栏排到左侧。 */
+.auth-card-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 436px);
+  gap: 48px;
+  width: min(1200px, 100%);
+  height: 100vh;
+  margin: 0 auto;
+  padding: 28px 32px;
+}
+.auth-info-col { order: -1; }
+
+/* 居中用 margin:auto：空间不足时自然顶对齐，不会出现滚不到的死区。 */
+.auth-card-col { display: grid; align-items: center; justify-items: stretch; overflow: auto; }
+.auth-card {
+  width: 100%;
+  margin: auto;
+  padding: 26px 26px 20px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+  backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.auth-card-brand { display: flex; align-items: center; gap: 12px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+.auth-card-brand .brand-mark {
+  width: 40px; height: 40px; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border-radius: 13px;
+  background: linear-gradient(140deg, var(--primary), var(--primary-2));
+  color: var(--primary-ink);
+  font-weight: 800; font-size: 18px;
+  letter-spacing: -0.02em;
+}
+.auth-card-brand .brand-name { font-size: 14.5px; font-weight: 650; letter-spacing: 0.01em; }
+.auth-card-brand .brand-meta { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+
+.auth-card-body { display: grid; gap: 12px; }
+.auth-card-brand + .auth-card-body { padding-top: 18px; }
+.auth-card-body h1 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
+.auth-card-body .lead { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.auth-card form { display: grid; gap: 12px; }
+
+.auth-card .field { display: grid; gap: 6px; min-width: 0; }
+.auth-card .field label { color: var(--ink-2); font-size: 12.5px; font-weight: 560; }
+.auth-card .field small, .auth-card .field .description { color: var(--muted); font-size: 11.5px; }
+.auth-card .input,
+.auth-card select,
+.auth-card textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface-3);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+.auth-card .input::placeholder { color: var(--faint); }
+.auth-card .input:hover { border-color: var(--muted); }
+.auth-card .input:focus,
+.auth-card select:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: var(--surface-2);
+  box-shadow: var(--ring);
+}
+
+.auth-card .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 42px; padding: 9px 16px;
+  border: 1px solid var(--line-strong); border-radius: 12px;
+  background: var(--surface-3); color: var(--ink);
+  font: inherit; font-size: 13px; font-weight: 560; cursor: pointer;
+  transition: transform 120ms ease, filter 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.auth-card .btn:hover:not(:disabled) { border-color: var(--muted); background: var(--surface-2); }
+.auth-card .btn:active:not(:disabled) { transform: translateY(1px); }
+.auth-card .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.auth-card .btn.primary {
+  width: 100%;
+  border-color: transparent;
+  background: linear-gradient(140deg, var(--primary), var(--primary-2));
+  color: var(--primary-ink);
+  font-weight: 680;
+}
+.auth-card .btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+.auth-card .btn:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.auth-card .password-wrap { position: relative; display: block; }
+.auth-card .password-wrap .input { padding-right: 46px; }
+.auth-card .reveal {
+  position: absolute; top: 4px; right: 4px;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 9px;
+  background: transparent; color: var(--faint);
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+.auth-card .reveal:hover { color: var(--ink); background: var(--surface-3); }
+.auth-card .reveal:focus-visible { outline: none; box-shadow: var(--ring); color: var(--ink); }
+.auth-card .reveal svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.auth-card .form-error { min-height: 16px; color: var(--danger); font-size: 12px; line-height: 1.5; }
+.auth-card .form-error:empty { display: none; }
+
+.auth-card .field-row { display: flex; gap: 8px; align-items: stretch; }
+.auth-card .field-row .input { flex: 1 1 auto; }
+.auth-card .field-row .btn { flex: 0 0 auto; min-width: 118px; white-space: nowrap; }
+.auth-card .hint-ok { min-height: 14px; color: var(--success); font-size: 11.5px; }
+
+.auth-card-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12px;
+}
+.auth-card-foot a { color: var(--ink-2); font-weight: 560; }
+.auth-card-foot a:hover { color: var(--primary); text-decoration: none; }
+.auth-foot { margin: 0; }
+.auth-card .auth-meta { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--faint); font-size: 11.5px; }
+.auth-card .auth-meta b { color: var(--ink-2); font-family: var(--mono); font-weight: 600; }
+.auth-card .auth-meta .meta-sep { color: var(--line-strong); }
+.auth-card .auth-meta a { color: var(--muted); }
+
+/* ---------- 右栏：产品说明 + 版本更新 ---------- */
+.auth-info-col { display: flex; flex-direction: column; overflow: auto; padding-right: 6px; scrollbar-width: thin; }
+.auth-info-col::-webkit-scrollbar { width: 8px; }
+.auth-info-col::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--line-strong); }
+.auth-info-inner { display: grid; gap: 18px; max-width: 600px; margin-block: auto; padding: 8px 0 24px; }
+
+/* 左侧品牌块（图标 + 字标 + 副标） */
+.auth-brand { display: flex; align-items: center; gap: 12px; }
+.auth-brand .brand-mark {
+  width: 42px; height: 42px; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border-radius: 13px;
+  background: linear-gradient(140deg, var(--primary), var(--primary-2));
+  color: var(--primary-ink);
+  font-weight: 800; font-size: 18px;
+  letter-spacing: -0.02em;
+  box-shadow: 0 14px 30px -18px var(--primary);
+}
+.auth-brand .brand-name { font-size: 15px; font-weight: 700; letter-spacing: 0.01em; }
+.auth-brand .brand-meta { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+.auth-info-col h2 { margin: 0; font-size: 26px; line-height: 1.34; letter-spacing: -0.02em; }
+.auth-info-col > .auth-info-inner > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.75; }
+.context-kicker {
+  justify-self: start;
+  padding: 3px 10px; border-radius: 999px;
+  border: 1px solid rgba(15, 182, 166, 0.4); background: var(--primary-soft);
+  color: var(--primary); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+}
+
+.feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px; }
+.feature-item {
+  display: flex; align-items: flex-start; gap: 11px;
+  padding: 13px 14px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  backdrop-filter: blur(10px);
+}
+.feature-item .fi-icon {
+  width: 30px; height: 30px; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  background: var(--primary-soft); color: var(--primary);
+  font-size: 12.5px; font-weight: 700;
+}
+.feature-item strong { display: block; font-size: 12.5px; }
+.feature-item p { margin: 3px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.6; }
+
+.card-changelog {
+  padding: 16px 18px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface-2);
+  backdrop-filter: blur(12px);
+}
+.changelog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.changelog-head h3 { margin: 0; font-size: 13.5px; }
+.changelog-now { color: var(--faint); font-size: 11.5px; }
+.changelog-now b { color: var(--accent); font-family: var(--mono); }
+/* 版本更新只列标题后条目变多：给列表自己的滚动区，卡片不会把左栏撑出视口，
+   列在高版本那一侧（v17）保留说明文字，历史版本只留标题。 */
+.changelog-list {
+  display: grid; gap: 10px; margin: 14px 0 0; padding: 0 4px 0 0; list-style: none;
+  align-content: start;
+  max-height: clamp(200px, calc(100vh - 560px), 380px);
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+}
+.changelog-list::-webkit-scrollbar { width: 6px; }
+.changelog-list::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--line-strong); }
+/* 底部渐隐：提示「下面还有历史版本」，否则列表被裁掉时看不出可滚动。 */
+.changelog-list {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
+}
+.changelog-list li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; }
+.changelog-tag {
+  height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong); background: var(--surface-3);
+  color: var(--muted); font-family: var(--mono); font-size: 10.5px;
+}
+.changelog-list li:first-child .changelog-tag { border-color: rgba(15, 182, 166, 0.45); background: var(--primary-soft); color: var(--primary); }
+.changelog-body b { display: block; font-size: 12.5px; }
+.changelog-body p { margin: 4px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.7; }
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 1080px) {
+  .auth-card-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .auth-info-col { order: 0; display: block; }
+  body.auth-split { overflow: auto; }
+  .auth-card-layout { height: auto; min-height: 100vh; }
+  .auth-card-col { overflow: visible; }
+  .auth-info-col { overflow: visible; padding-right: 0; }
+  .auth-info-inner { max-width: none; padding-bottom: 40px; }
+  .auth-info-col h2 { font-size: 21px; }
+}
+@media (max-width: 560px) {
+  .auth-card-layout { padding: 16px 14px 32px; }
+  .auth-card { padding: 20px 18px 16px; border-radius: 16px; }
+  .auth-card-body h1 { font-size: 21px; }
+  .auth-card .field-row { flex-wrap: wrap; }
+  .auth-card .field-row .btn { width: 100%; }
+  .feature-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
+/* 版本号占位：读不到 /static/version.json 时显示 — */
+.auth-card .app-version { font-family: var(--mono); font-variant-numeric: tabular-nums; }

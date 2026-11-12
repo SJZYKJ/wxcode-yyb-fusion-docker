@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -85,21 +86,30 @@ func (db *DB) DeleteUserScriptJob(ctx context.Context, ownerUserID int64, script
 	return err
 }
 
-// ListOwnerAccountScriptJobs 取某个登录账号名下全部「账号级」任务的轻量引用。
-// ownerKey=0 表示未归属账号。
-func (db *DB) ListOwnerAccountScriptJobs(ctx context.Context, ownerKey int64) ([]AccountScriptJobRef, error) {
+// ListOwnerScriptJobRefs 取指定 code 账号集合上的「账号级」任务轻量引用。
+//
+// 合并说明：上游 0.3.x 把账号归属迁到 auth.account_owners（auth 库，另一个 sqlite
+// 文件），wechat_accounts.owner_user_id 已删除，因此这里不再自己 join 归属列，
+// 而是由调用方先把「某个登录账号名下的 code 账号」算好再按 id 列表过滤。
+func (db *DB) ListOwnerScriptJobRefs(ctx context.Context, accountIDs []int64) ([]AccountScriptJobRef, error) {
+	if len(accountIDs) == 0 {
+		return nil, nil
+	}
+	// 账号数量级很小（单机几十个），直接展开占位符；上限兜底避免超长 SQL。
+	if len(accountIDs) > 1000 {
+		accountIDs = accountIDs[:1000]
+	}
+	placeholders := make([]string, 0, len(accountIDs))
+	args := make([]any, 0, len(accountIDs))
+	for _, id := range accountIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
 	query := `
 SELECT j.account_id, j.script_key, j.ql_cron_id
-FROM account_script_jobs j JOIN wechat_accounts a ON a.id = j.account_id
-WHERE a.owner_user_id IS NULL ORDER BY j.account_id, j.script_key`
-	args := []any{}
-	if ownerKey > 0 {
-		query = `
-SELECT j.account_id, j.script_key, j.ql_cron_id
-FROM account_script_jobs j JOIN wechat_accounts a ON a.id = j.account_id
-WHERE a.owner_user_id = ? ORDER BY j.account_id, j.script_key`
-		args = append(args, ownerKey)
-	}
+FROM account_script_jobs j
+WHERE j.account_id IN (` + strings.Join(placeholders, ",") + `)
+ORDER BY j.account_id, j.script_key`
 	rows, err := db.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

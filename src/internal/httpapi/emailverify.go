@@ -524,7 +524,7 @@ func buildVerificationMail(cfg SMTPConfig, email, code string) string {
 	var b strings.Builder
 	b.WriteString("From: " + strings.TrimSpace(cfg.From) + "\r\n")
 	b.WriteString("To: " + strings.TrimSpace(email) + "\r\n")
-	b.WriteString("Subject: " + encodeMailHeader("YYB Go 邮箱验证码") + "\r\n")
+	b.WriteString("Subject: " + encodeMailHeader("wxcode-YYB 邮箱验证码") + "\r\n")
 	b.WriteString("Date: " + date + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
@@ -576,7 +576,14 @@ func (a *App) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 	}
 	verifier := a.emailCodeFor()
 	if verifier == nil {
-		writeError(w, http.StatusServiceUnavailable, "当前模式不支持邮箱验证注册")
+		// 两种「发不了码」要给出不同的提示：广播模式（a.auth == nil）根本没有账号体系，
+		// 而账号模式下的 verifier 为空只可能是 SMTP 没配置完 —— 后者要让用户看到
+		// 明确的「请联系管理员」，而不是一句「模式不支持」。
+		if a.auth == nil {
+			writeError(w, http.StatusServiceUnavailable, "当前模式不支持邮箱验证注册")
+		} else {
+			writeError(w, http.StatusServiceUnavailable, smtpNotConfiguredMessage)
+		}
 		return
 	}
 	var body struct {
@@ -620,7 +627,10 @@ func (a *App) handleEmailCode(w http.ResponseWriter, r *http.Request) {
 func (a *App) verifyRegistrationEmail(email, code string) error {
 	verifier := a.emailCodeFor()
 	if verifier == nil {
-		return errors.New("当前模式不支持邮箱验证注册")
+		if a.auth == nil {
+			return errors.New("当前模式不支持邮箱验证注册")
+		}
+		return errors.New(smtpNotConfiguredMessage)
 	}
 	// 用「当前生效」的配置判断，而不是启动时的环境变量：管理员在界面上配好 SMTP 后，
 	// 注册必须立刻可用，否则会出现「设置页显示已配置、注册却仍报未配置」的矛盾。

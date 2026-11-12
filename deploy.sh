@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  wxcode + YYB Go 融合网关 · 一键部署
+#  wxcode + wxcode-YYB 融合网关 · 一键部署
 #
 #  方式一（推荐，无需 clone）：
 #    curl -fsSL https://raw.githubusercontent.com/SJZYKJ/wxcode-yyb-fusion-docker/main/deploy.sh | bash
@@ -66,7 +66,7 @@ step() { printf '\n%s\n' "${C_BOLD}$*${C_RESET}"; }
 
 usage() {
     cat <<'USAGE'
-wxcode + YYB Go 融合网关 · 一键部署
+wxcode + wxcode-YYB 融合网关 · 一键部署
 
 用法：
   ./deploy.sh [选项]              # 在仓库目录里执行

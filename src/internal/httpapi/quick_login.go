@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"yyb_go/internal/protocol"
+	"yyb_go/internal/proxysource"
 	"yyb_go/internal/qr"
 )
 
@@ -18,6 +20,10 @@ var desktopWechatPorts = []int{14013, 14014, 14015, 13013, 13014, 13015}
 
 type quickLoginSession struct {
 	CreatedAt time.Time
+	Product   string
+	State     string
+	ProxySpec proxysource.Spec
+	ProxyIn   accountProxyIn
 }
 
 func (a *App) handleQuickLoginRoot(w http.ResponseWriter, r *http.Request) {
@@ -29,23 +35,49 @@ func (a *App) handleQuickLoginRoot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !a.cfg.EnablePCLogin {
+		writeError(w, http.StatusNotFound, "PC 登录已关闭，请使用微信扫码授权")
+		return
+	}
 
 	a.pruneQuickSessions()
+	var proxyBody accountProxyIn
+	if err := decodeOptionalJSON(r, &proxyBody); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	product, err := normalizeLoginProduct(proxyBody.Product)
+	if err != nil || product != "appstore" && product != "qbbrowser" {
+		writeError(w, http.StatusUnprocessableEntity, "本机微信快捷授权支持应用宝和 QQ 浏览器，其他渠道请扫码")
+		return
+	}
+	oauth, err := qr.OAuthURL(product)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "生成授权参数失败")
+		return
+	}
+	authorize, _ := url.Parse(oauth)
+	params := authorize.Query()
+	normalizedBody, proxySpec, err := a.normalizeAccountProxyInput(r.Context(), proxyBody)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	sessionID, err := randomSessionID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	a.mu.Lock()
-	a.quickSessions[sessionID] = quickLoginSession{CreatedAt: time.Now()}
+	a.quickSessions[sessionID] = quickLoginSession{CreatedAt: time.Now(), Product: product, State: params.Get("state"), ProxySpec: proxySpec, ProxyIn: normalizedBody}
 	a.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_id":   sessionID,
-		"appid":        qr.AppID,
-		"scope":        qr.OAuthScope,
-		"redirect_uri": qr.OAuthRedirectURI,
-		"state":        qr.OAuthState,
+		"appid":        params.Get("appid"),
+		"scope":        params.Get("scope"),
+		"redirect_uri": params.Get("redirect_uri"),
+		"state":        params.Get("state"),
 		"ports":        desktopWechatPorts,
 		"expires_in":   int64(a.cfg.QRSessionTTL.Seconds()),
 	})
@@ -59,6 +91,10 @@ func (a *App) handleQuickLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !a.cfg.EnablePCLogin {
+		writeError(w, http.StatusNotFound, "PC 登录已关闭，请使用微信扫码授权")
 		return
 	}
 
@@ -75,40 +111,96 @@ func (a *App) handleQuickLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	code, err := parseQuickAuthorizeRedirect(body.RedirectURL)
+	a.mu.Lock()
+	expected, exists := a.quickSessions[parts[0]]
+	a.mu.Unlock()
+	if !exists || time.Since(expected.CreatedAt) > a.cfg.QRSessionTTL {
+		writeError(w, http.StatusNotFound, "quick login session expired or not found")
+		return
+	}
+	code, err := parseQuickAuthorizeRedirectForProduct(body.RedirectURL, expected.Product, expected.State)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !a.takeQuickSession(parts[0]) {
+	session, ok := a.takeQuickSession(parts[0])
+	if !ok {
 		writeError(w, http.StatusNotFound, "quick login session expired or not found")
 		return
 	}
 
-	result, err := a.exchangeAuthCode(r.Context(), code)
+	client := a.qr
+	var result protocol.LoginBufferResult
+	if session.ProxySpec.Mode == "direct" && session.Product != "qbbrowser" {
+		result, err = a.exchangeAuthCode(r.Context(), code)
+	} else {
+		client, _, err = a.qrClientForSpec(r.Context(), session.ProxySpec)
+		if err == nil {
+			result, err = client.GetLoginBufferFromCodeForProduct(r.Context(), code, session.Product)
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusConflict, "quick authorization failed: "+err.Error())
 		return
 	}
 	var userInfo map[string]any
-	if ui, err := a.fetchUserInfo(r.Context(), result.Credentials); err == nil {
+	if session.ProxySpec.Mode == "direct" {
+		if ui, err := a.fetchUserInfo(r.Context(), result.Credentials); err == nil {
+			userInfo = ui
+		}
+	} else if ui, err := client.LoginBuffers().FetchUserInfo(r.Context(), result.Credentials); err == nil {
 		userInfo = ui
 	}
-	account, err := a.storeFromScan(r.Context(), r, result.LoginBuffer, result.Credentials, userInfo)
+	existed, err := a.accountExistsBeforeScan(r.Context(), result.Credentials.OpenID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := a.ensureScannedAccountAllowed(r, result.Credentials.OpenID); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	account, err := a.storeFromScan(r.Context(), result.LoginBuffer, result.Credentials, userInfo)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := a.claimScannedAccount(r, account.ID); err != nil {
+		if !existed {
+			_ = a.db.DeleteAccount(r.Context(), account.ID)
+		}
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if err := a.saveNewAccountProxy(r.Context(), account.ID, existed, session.ProxyIn, session.ProxySpec); err != nil {
+		if !existed {
+			_ = a.db.DeleteAccount(r.Context(), account.ID)
+		}
+		writeError(w, http.StatusInternalServerError, "保存账号代理失败: "+err.Error())
+		return
+	}
+	a.autoSyncAfterScan(account)
 	writeJSON(w, http.StatusOK, account.Public())
 }
 
 func parseQuickAuthorizeRedirect(raw string) (string, error) {
+	return parseQuickAuthorizeRedirectForProduct(raw, "appstore", qr.OAuthState)
+}
+
+func parseQuickAuthorizeRedirectForProduct(raw, product, state string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), "yybadaccess.3g.qq.com") || u.Port() != "" || u.User != nil || u.Path != "/pc_yyb/pcyyb_oauth" {
+	host, path := "yybadaccess.3g.qq.com", "/pc_yyb/pcyyb_oauth"
+	if product == "qbbrowser" {
+		host, path = "go.browser.qq.com", "/wx-login.html"
+	}
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), host) || u.Port() != "" || u.User != nil || u.Path != path || u.Fragment != "" {
 		return "", fmt.Errorf("invalid quick authorization redirect")
 	}
 	query := u.Query()
-	if query.Get("login_type") != "WX" || query.Get("state") != qr.OAuthState {
+	if state == "" && product != "qbbrowser" {
+		state = qr.OAuthState
+	}
+	if query.Get("state") != state || state == "" || len(query["state"]) != 1 || len(query["code"]) != 1 || product != "qbbrowser" && query.Get("login_type") != "WX" {
 		return "", fmt.Errorf("invalid quick authorization state")
 	}
 	code := strings.TrimSpace(query.Get("code"))
@@ -134,15 +226,15 @@ func randomSessionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func (a *App) takeQuickSession(sessionID string) bool {
+func (a *App) takeQuickSession(sessionID string) (quickLoginSession, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	session, ok := a.quickSessions[sessionID]
 	if !ok {
-		return false
+		return quickLoginSession{}, false
 	}
 	delete(a.quickSessions, sessionID)
-	return time.Since(session.CreatedAt) <= a.cfg.QRSessionTTL
+	return session, time.Since(session.CreatedAt) <= a.cfg.QRSessionTTL
 }
 
 func (a *App) pruneQuickSessions() {

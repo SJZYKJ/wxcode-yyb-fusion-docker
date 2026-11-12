@@ -10,7 +10,7 @@ import (
 
 const authorizeEndpoint = "https://open.weixin.qq.com/connect/oauth2/authorize"
 
-// Request contains the public-account OAuth parameters accepted by YYB Go.
+// Request contains the public-account OAuth parameters accepted by wxcode-YYB.
 // The account reference is handled by the HTTP layer; this package only builds
 // and validates the WeChat authorization URL.
 type Request struct {

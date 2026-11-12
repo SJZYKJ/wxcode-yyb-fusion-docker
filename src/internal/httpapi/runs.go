@@ -131,7 +131,7 @@ func (a *App) handleQingLongJobs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	ownerKey := accountOwnerKey(acc)
+	ownerKey := a.accountOwnerKey(r.Context(), acc)
 	// 老版本是「每个 code 账号一条定时任务」，这里顺手把还启用着的收敛成登录账号级
 	// 任务（幂等，见 healLegacyOwnerJobs）。
 	a.healLegacyOwnerJobs(r.Context(), ownerKey, catalog)
@@ -144,13 +144,13 @@ func (a *App) handleQingLongJobs(w http.ResponseWriter, r *http.Request) {
 	// 只有真的不一致时才回写青龙。
 	userJobs = a.syncUserJobs(r.Context(), ownerKey, catalog, userJobs)
 	// 库里存的 key 可能是旧写法的裸文件名（见 matchScriptKey），先归一到当前池子
-	scheduledByKey := make(map[string]store.UserScriptJob, len(userJobs))
+	jobsByKey := make(map[string]store.UserScriptJob, len(userJobs))
 	for _, job := range userJobs {
 		if key, ok := matchScriptKey(catalog.Sources, job.ScriptKey); ok {
-			scheduledByKey[key] = job
+			jobsByKey[key] = job
 			continue
 		}
-		scheduledByKey[job.ScriptKey] = job
+		jobsByKey[job.ScriptKey] = job
 	}
 	// 「手动运行」留下的账号级任务也算「已配置」，保持升级前的列表观感。
 	manualJobs, err := a.db.ListAccountScriptJobs(r.Context(), acc.ID)
@@ -181,15 +181,20 @@ func (a *App) handleQingLongJobs(w http.ResponseWriter, r *http.Request) {
 			Schedule:         source.Schedule,
 			GlobalTaskActive: source.GlobalCron != nil && source.GlobalCron.enabled(),
 		}
-		if job, exists := scheduledByKey[source.Key]; exists {
-			item.Provisioned = true
-			item.Schedule = job.Schedule
+		if job, exists := jobsByKey[source.Key]; exists {
 			if cron, found := catalog.CronsByID[job.QLCronID]; found {
+				item.Provisioned = true
+				item.Schedule = cron.getSchedule()
 				item.Enabled = cron.enabled()
 				item.Running = cron.running()
 				item.QLCronID = cron.ID
 				item.LastExecutionAt = cron.getLastExecutionAt()
 				item.LastRunningTime = cron.getLastRunningTime()
+			} else {
+				// 下游语义：库里已有配置就仍算「已配置」，调度沿用记录值
+				// （上游只认青龙侧实时活着的任务，这里两者兼顾）。
+				item.Provisioned = true
+				item.Schedule = job.Schedule
 			}
 		} else if job, exists := manualByKey[source.Key]; exists {
 			item.Provisioned = true
@@ -290,7 +295,7 @@ func (a *App) handleQingLongJobEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	accounts, _ := a.ownerAccounts(r.Context(), accountOwnerKey(acc))
+	accounts, _ := a.ownerAccounts(r.Context(), a.accountOwnerKey(r.Context(), acc))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": true, "provisioned": true, "ql_cron_id": job.QLCronID,
 		"script_key": source.Key, "name": source.displayName(), "scope_count": len(accounts),
@@ -446,13 +451,16 @@ func (a *App) accountRunHistory(ctx context.Context, acc *store.WechatAccount, s
 	if err != nil {
 		return nil, err
 	}
-	userJobs, err := a.db.ListUserScriptJobs(ctx, accountOwnerKey(acc))
+	userJobs, err := a.db.ListUserScriptJobs(ctx, a.accountOwnerKey(ctx, acc))
 	if err != nil {
 		return nil, err
 	}
-	logs, err := a.qinglong.listLogs(ctx)
-	if err != nil {
-		return nil, err
+	var logs []qingLongLogEntry
+	if a.qinglong.getPanelType() != PanelTypeDaidai {
+		logs, err = a.qinglong.listLogs(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	sourceByKey := make(map[string]scriptSource, len(sources))
 	for _, source := range sources {
@@ -465,7 +473,7 @@ func (a *App) accountRunHistory(ctx context.Context, acc *store.WechatAccount, s
 			logRoots[entry.Title] = entry
 		}
 	}
-	accounts, _ := a.ownerAccounts(ctx, accountOwnerKey(acc))
+	accounts, _ := a.ownerAccounts(ctx, a.accountOwnerKey(ctx, acc))
 	out := make([]accountRunPublic, 0)
 	seenCron := make(map[int64]struct{})
 	appendCron := func(cron qingLongCron, rawKey, jobScope string) {
@@ -473,6 +481,31 @@ func (a *App) accountRunHistory(ctx context.Context, acc *store.WechatAccount, s
 			return
 		}
 		seenCron[cron.ID] = struct{}{}
+		// Daidai exposes latest-log by task ID, not QingLong's directory tree, and a
+		// Daidai panel may not expose a script listing at all — so this branch has to
+		// stay ahead of the script-pool lookup below, otherwise the history is empty.
+		// （合并说明：上游这段原本写在 for job := range jobs 循环里，下游把它挪进了
+		// appendCron 闭包，所以 continue 改成 return，job.ScriptKey/accountID 换成闭包里的
+		// rawKey/acc，其余语义保持一致。）
+		if a.qinglong.getPanelType() == PanelTypeDaidai {
+			key, ok := matchScriptKey(sources, rawKey)
+			if !ok {
+				key = rawKey // Daidai 没有脚本目录可对照时，退回库里记录的 key
+			}
+			status := "最近日志"
+			if cron.running() {
+				status = "运行中"
+			}
+			scopeCount := 1
+			if jobScope == "owner" {
+				scopeCount = len(accounts)
+			}
+			out = append(out, accountRunPublic{AccountID: acc.ID, ScriptKey: key,
+				Name: key, QLCronID: cron.ID, LogKey: fmt.Sprintf("daidai/%d", cron.ID),
+				StartedAt: cron.getLastExecutionAt(), Running: cron.running(), TaskStatus: status,
+				Scope: jobScope, ScopeCount: scopeCount})
+			return
+		}
 		key, ok := matchScriptKey(sources, rawKey)
 		if !ok {
 			return // 脚本不在可见范围（或被管理员限制掉）就不展示它的日志
@@ -740,7 +773,7 @@ func matchScriptKey(sources []scriptSource, raw string) (string, bool) {
 // 认得出这些常见写法：
 //
 //	task code脚本/绿鼻子.js                          -> code脚本/绿鼻子.js
-//	task 525815266_YYB-Go-Enhanced/scripts/DTSH.py   -> 525815266_YYB-Go-Enhanced/scripts/DTSH.py
+//	task qinglong/scripts/DTSH.py                     -> qinglong/scripts/DTSH.py
 //	node /ql/scripts/美的会员.js                      -> 美的会员.js
 //	task 绿鼻子.js                                    -> 绿鼻子.js
 func parseScriptPathFromCron(cron qingLongCron) (string, bool) {
@@ -804,6 +837,49 @@ func scriptPathFromCommand(command string) string {
 		cmd = cmd[idx+len(marker):]
 	}
 	return strings.Trim(cmd, "/")
+}
+
+// parseScriptKeyFromCron 是上游 v0.3.3 的多仓库脚本 key 解析：先按面板配置的仓库
+// 前缀匹配，再按命令里出现的 /<仓库名>/ 段匹配，返回 (脚本 key, 命中的仓库, ok)。
+// 与下游的 parseScriptPathFromCron 并存：后者用于「脚本池降级」等单池场景，
+// 本函数用于按仓库根目录还原脚本 key（含 Windows/daidai 面板的反斜杠归一化）。
+func parseScriptKeyFromCron(cron qingLongCron, repos []string) (string, string, bool) {
+	if strings.HasPrefix(cron.Name, "[YYB:") {
+		return "", "", false
+	}
+	cmd := strings.TrimSpace(cron.Command)
+	for _, p := range []string{"arcadia run ", "task ", "node ", "python3 ", "python "} {
+		if strings.HasPrefix(cmd, p) {
+			cmd = strings.TrimSpace(strings.TrimPrefix(cmd, p))
+		}
+	}
+	// Daidai and Windows-based QingLong clients may return task commands with
+	// backslashes. Normalize before matching configured repository roots so the
+	// same task is visible regardless of the panel's path separator.
+	cmd = strings.ReplaceAll(cmd, "\\", "/")
+	for _, repo := range repos {
+		cleanRepo := strings.Trim(strings.TrimSpace(repo), "/")
+		prefix := cleanRepo + "/"
+		if strings.HasPrefix(cmd, prefix) {
+			key := strings.TrimSpace(strings.TrimPrefix(cmd, prefix))
+			if validScriptKey.MatchString(key) && !isIgnoredScriptKey(key) {
+				return key, cleanRepo, true
+			}
+		}
+		if idx := strings.Index(cmd, "/"+cleanRepo+"/"); idx != -1 {
+			key := strings.TrimSpace(cmd[idx+len("/"+cleanRepo+"/"):])
+			if validScriptKey.MatchString(key) && !isIgnoredScriptKey(key) {
+				return key, cleanRepo, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// isIgnoredScriptKey 判定某个脚本 key 是否属于「不能单独挂给账号」的内置/工具脚本。
+func isIgnoredScriptKey(key string) bool {
+	key = strings.TrimSpace(key)
+	return key == "SendNotify.py" || strings.Contains(key, "eoos_checkin.py")
 }
 
 // 不能被挂给账号单独跑的文件。
@@ -881,6 +957,17 @@ func (a *App) ensureAccountJob(ctx context.Context, acc *store.WechatAccount, sc
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, scriptSource{}, err
 	}
+	// 重装/迁移后本地 account_script_jobs 行可能丢失，但青龙里的托管任务还在。
+	// 直接复用那条任务，避免再建一条重复任务（青龙会拒绝同命令同调度的重复任务）。
+	if crons, scanErr := a.qinglong.listCrons(ctx, ""); scanErr == nil {
+		if existing, ok := findManagedAccountCron(crons, acc.ID, scriptKey, command); ok {
+			if err := a.qinglong.updateCron(ctx, existing.ID, name, command, source.Schedule, taskBefore, logName); err != nil {
+				return nil, scriptSource{}, err
+			}
+			job, err := a.db.UpsertAccountScriptJob(ctx, acc.ID, scriptKey, existing.ID, source.Schedule)
+			return job, source, err
+		}
+	}
 	cron, err := a.qinglong.createCron(ctx, name, command, source.Schedule, taskBefore, logName)
 	if err != nil {
 		return nil, scriptSource{}, err
@@ -903,6 +990,35 @@ func managedTaskName(acc *store.WechatAccount, sourceName string) string {
 func managedLogName(accountID int64, scriptKey string) string {
 	sum := sha256.Sum256([]byte(scriptKey))
 	return fmt.Sprintf("yyb_account_%d_%x", accountID, sum[:6])
+}
+
+// findManagedAccountCron 在青龙的任务列表里找「这个账号、这个脚本」的托管任务。
+// 必须带账号标记（[YYB:<id>]），否则用户自己建的同脚本任务会被误当成网关任务。
+func findManagedAccountCron(crons []qingLongCron, accountID int64, scriptKey, expectedCommand string) (qingLongCron, bool) {
+	prefix := fmt.Sprintf("[YYB:%d]", accountID)
+	expected := normalizeCronCommand(expectedCommand)
+	for _, cron := range crons {
+		if !strings.HasPrefix(strings.TrimSpace(cron.Name), prefix) {
+			continue
+		}
+		actual := normalizeCronCommand(cron.Command)
+		if actual == expected || strings.HasSuffix(actual, "/"+strings.TrimSpace(scriptKey)) {
+			return cron, true
+		}
+	}
+	return qingLongCron{}, false
+}
+
+// normalizeCronCommand 去掉运行器前缀，方便比较两条任务是不是在跑同一个脚本。
+func normalizeCronCommand(command string) string {
+	command = strings.TrimSpace(command)
+	for _, prefix := range []string{"arcadia run ", "task ", "node ", "python3 ", "python "} {
+		if strings.HasPrefix(command, prefix) {
+			command = strings.TrimSpace(strings.TrimPrefix(command, prefix))
+			break
+		}
+	}
+	return command
 }
 
 // accountTaskSpec 拼出「网关托管的账号任务」：命令负责跑脚本，任务前命令负责把这
@@ -1006,12 +1122,12 @@ func (a *App) savePushSetting(ctx context.Context, acc *store.WechatAccount, bod
 		return nil, errPushTokenRequired
 	}
 	if token != "" {
-		if err := a.qinglong.upsertEnv(ctx, selected[0], token, fmt.Sprintf("YYB Go 账号 %d %s 推送", acc.ID, channel)); err != nil {
+		if err := a.qinglong.upsertEnv(ctx, selected[0], token, fmt.Sprintf("wxcode-YYB 账号 %d %s 推送", acc.ID, channel)); err != nil {
 			return nil, err
 		}
 	}
 	if selected[1] != "" && body.Topic != nil {
-		if err := a.qinglong.upsertEnv(ctx, selected[1], strings.TrimSpace(*body.Topic), fmt.Sprintf("YYB Go 账号 %d PushPlus 群组", acc.ID)); err != nil {
+		if err := a.qinglong.upsertEnv(ctx, selected[1], strings.TrimSpace(*body.Topic), fmt.Sprintf("wxcode-YYB 账号 %d PushPlus 群组", acc.ID)); err != nil {
 			return nil, err
 		}
 	}
@@ -1074,7 +1190,7 @@ func (a *App) refreshAccountJobCommands(ctx context.Context, acc *store.WechatAc
 	// 定时任务（登录账号级）里也带着推送配置的引用，一并刷新。
 	// 一条任务覆盖多个 code 账号，而推送设置是按账号存的，所以取「刚保存推送的这个账号」
 	// 那一份，并把 anchor 记下来，之后自愈时按它重算。
-	ownerKey := accountOwnerKey(acc)
+	ownerKey := a.accountOwnerKey(ctx, acc)
 	userJobs, err := a.db.ListUserScriptJobs(ctx, ownerKey)
 	if err != nil {
 		return err
@@ -1138,19 +1254,24 @@ func (a *App) pushSettingPublic(ctx context.Context, setting *store.AccountPushS
 }
 
 func (a *App) namedEnvHasValue(ctx context.Context, name string) (bool, error) {
+	value, err := a.namedEnvValue(ctx, name)
+	return value != "", err
+}
+
+func (a *App) namedEnvValue(ctx context.Context, name string) (string, error) {
 	if name == "" {
-		return false, nil
+		return "", nil
 	}
 	envs, err := a.qinglong.listEnvs(ctx, name)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	for _, env := range envs {
-		if env.Name == name && strings.TrimSpace(env.Value) != "" {
-			return true, nil
+		if value := strings.TrimSpace(env.Value); env.Name == name && value != "" {
+			return value, nil
 		}
 	}
-	return false, nil
+	return "", nil
 }
 
 func writeRunError(w http.ResponseWriter, err error) {
@@ -1170,18 +1291,38 @@ func writeRunError(w http.ResponseWriter, err error) {
 // 之所以要拆成两种任务：青龙的任务前命令是建任务时写死的文本，一条任务只能有一种
 // 账号范围。混用的话要么手动运行会跑全部账号，要么定时任务只跑其中一个。
 
-// accountOwnerKey 把账号归属折算成「登录账号」标识；owner_user_id 为空的历史账号
-// 归到 0（管理员名下）。
-func accountOwnerKey(acc *store.WechatAccount) int64 {
-	if acc == nil || acc.OwnerUserID == nil {
+// accountOwnerKey 把账号归属折算成「登录账号」标识；无归属的历史账号归到 0（管理员名下）。
+//
+// 上游 0.3.x 把归属收敛到 auth.account_owners（ClaimAccount/AccountOwner），
+// 因此这里按 auth 查、而不是另建一套 wechat_accounts.owner_user_id 的记录。
+func (a *App) accountOwnerKey(ctx context.Context, acc *store.WechatAccount) int64 {
+	if acc == nil || a.auth == nil {
 		return 0
 	}
-	return *acc.OwnerUserID
+	owner, err := a.auth.AccountOwner(ctx, acc.ID)
+	if err != nil {
+		return 0
+	}
+	return owner
 }
 
-// ownerAccounts 该登录账号名下的全部 code 账号。
+// ownerAccounts 该登录账号名下的全部 code 账号。未启用账号体系（a.auth == nil）时
+// 不做隔离，返回全部账号，与「本机管理员」语义一致。
 func (a *App) ownerAccounts(ctx context.Context, ownerKey int64) ([]*store.WechatAccount, error) {
-	return a.db.ListAccountsByOwnerKey(ctx, ownerKey)
+	accounts, err := a.db.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if a.auth == nil {
+		return accounts, nil
+	}
+	out := make([]*store.WechatAccount, 0, len(accounts))
+	for _, acc := range accounts {
+		if a.accountOwnerKey(ctx, acc) == ownerKey {
+			out = append(out, acc)
+		}
+	}
+	return out, nil
 }
 
 // validOpenIDForTask 判断 openid 能不能安全地写进任务前命令。
@@ -1277,7 +1418,7 @@ func (a *App) resolveVisibleScript(r *http.Request, catalog scriptCatalogResult,
 
 // resolveUserScriptJob 找这个登录账号下某个脚本的定时任务；历史裸文件名也认。
 func (a *App) resolveUserScriptJob(ctx context.Context, acc *store.WechatAccount, scriptKey string) (*store.UserScriptJob, error) {
-	ownerKey := accountOwnerKey(acc)
+	ownerKey := a.accountOwnerKey(ctx, acc)
 	scriptKey = strings.TrimSpace(scriptKey)
 	job, err := a.db.GetUserScriptJob(ctx, ownerKey, scriptKey)
 	if err == nil || !errors.Is(err, sql.ErrNoRows) {
@@ -1305,7 +1446,7 @@ func (a *App) ensureUserJob(ctx context.Context, acc *store.WechatAccount, scrip
 	if !found {
 		return nil, scriptSource{}, fmt.Errorf("不支持的脚本: %s", strings.TrimSpace(scriptKey))
 	}
-	ownerKey := accountOwnerKey(acc)
+	ownerKey := a.accountOwnerKey(ctx, acc)
 	accounts, err := a.ownerAccounts(ctx, ownerKey)
 	if err != nil {
 		return nil, scriptSource{}, err
@@ -1429,7 +1570,17 @@ func (a *App) syncUserJobs(ctx context.Context, ownerKey int64, catalog scriptCa
 // 先建后停，中间不会出现「一个都不跑」的空窗。收敛过一次之后旧任务全是停用状态，
 // 这里就自然变成空操作。
 func (a *App) healLegacyOwnerJobs(ctx context.Context, ownerKey int64, catalog scriptCatalogResult) {
-	refs, err := a.db.ListOwnerAccountScriptJobs(ctx, ownerKey)
+	// 归属在 auth 库（account_owners），先把该登录账号名下的 code 账号算出来，
+	// 再按 id 列表取这些账号上的旧任务。
+	accounts, accErr := a.ownerAccounts(ctx, ownerKey)
+	if accErr != nil || len(accounts) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(accounts))
+	for _, acc := range accounts {
+		ids = append(ids, acc.ID)
+	}
+	refs, err := a.db.ListOwnerScriptJobRefs(ctx, ids)
 	if err != nil || len(refs) == 0 {
 		return
 	}

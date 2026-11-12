@@ -3,55 +3,61 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>用户管理 - YYB Go</title>
-  <link rel="stylesheet" href="/static/css/auth.css">
-  <link rel="stylesheet" href="/static/css/platform.css">
+  <title>用户管理 - wxcode-YYB</title>
+  <script>try{var theme=localStorage.getItem("yyb-skin");if(theme==="light"||theme==="dark")document.documentElement.dataset.theme=theme}catch(e){}</script>
+  <link rel="stylesheet" href="/static/css/platform.css?v=20261112-graphite">
+  <link rel="stylesheet" href="/static/css/skin-clean.css?v=20261112-graphite">
+  <script>try{if(localStorage.getItem("yyb-skin")==="clean")document.documentElement.dataset.skin="clean"}catch(e){}</script>
   <style>
-    .users-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
-    .users-toolbar .input { width:min(320px,100%); }
-    .users-table { background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-    .users-table table { width:100%; border-collapse:collapse; }
-    .users-table th,.users-table td { padding:12px 14px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
-    .users-table th { background:var(--surface); color:var(--muted); font-size:12px; }
-    .users-table tr:last-child td { border-bottom:0; }
-    .user-identity strong,.user-identity small { display:block; }
-    .user-identity small { margin-top:2px; color:var(--muted); }
-    .user-actions-row { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
-    .role-badge { display:inline-flex; padding:4px 8px; border-radius:999px; background:var(--surface); color:var(--muted); font-size:12px; }
-    .role-badge.admin { background:#fbeef2; color:#9f2444; }
-    .empty-users { padding:36px 16px; text-align:center; color:var(--muted); }
-    /* 勾选列：固定窄宽，避免表头/行因内容自适应而抖动 */
-    .users-table .col-select { width:44px; text-align:center; }
-    .users-table .col-select input[type="checkbox"] { width:18px; height:18px; cursor:pointer; vertical-align:middle; margin:0; }
-    .users-table tbody tr.selected { background:#f6f8ff; }
-    .users-toolbar-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-    .users-selection { color:var(--muted); font-size:13px; }
-    /* 键盘可达性：复选框与按钮共用统一的聚焦描边 */
-    .users-table input[type="checkbox"]:focus-visible,.users-toolbar button:focus-visible { outline:2px solid var(--accent,#2f6fed); outline-offset:2px; }
-    @media(max-width:720px){.users-toolbar{align-items:stretch;flex-direction:column}.users-toolbar .input{width:100%}.users-toolbar-actions{justify-content:space-between}.users-toolbar-actions .btn{flex:1 1 auto}.users-table{border:0;background:transparent}.users-table table,.users-table tbody,.users-table tr,.users-table td{display:block;width:100%}.users-table thead{display:none}.users-table tr{margin-bottom:10px;padding:12px;border:1px solid var(--line);border-radius:8px;background:#fff}.users-table td{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border:0}.users-table td::before{content:attr(data-label);color:var(--muted);font-size:12px}
-      /* 窄屏把首列拆成「选择框 + 身份信息」两行，选择框仍完整可见可点 */
-      .users-table td.col-select{display:flex;align-items:center;justify-content:flex-start;gap:9px;padding:0 0 8px;border-bottom:1px solid var(--line);margin-bottom:8px}
-      .users-table td.col-select::before{display:block;content:attr(data-label)}
-      .users-table td.col-select input[type="checkbox"]{width:20px;height:20px;flex:0 0 auto}
-      .users-table td:first-child{display:block}.users-table td:first-child::before{display:none}}
+    /* 用户管理 */
+    .users-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .users-toolbar .input { flex: 1 1 240px; max-width: 360px; }
+    .users-selection { color: var(--muted); font-size: 12.5px; }
+    .users-table { overflow: auto; padding: 0; }
+    .users-table table { min-width: 720px; }
+    .users-table tbody tr.selected td { background: var(--primary-soft); }
+    .user-identity { display: grid; gap: 2px; min-width: 0; }
+    .user-identity strong { color: var(--ink); font-weight: 620; }
+    .user-identity small { color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+    .role-badge {
+      display: inline-flex; align-items: center; height: 22px; padding: 0 9px;
+      border: 1px solid var(--line); border-radius: 999px;
+      background: var(--surface-3); color: var(--muted); font-size: 11.5px;
+    }
+    .role-badge.admin { color: var(--accent); border-color: rgba(245, 165, 36, 0.34); background: var(--accent-soft); }
+    .user-actions-row { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .user-actions-row .btn { min-height: 28px; padding: 3px 9px; font-size: 12px; }
+    .col-select { width: 42px; }
+    .empty-users { padding: 24px 14px; text-align: center; color: var(--muted); font-size: 13px; }
+    @media (max-width: 899px) {
+      .users-toolbar .input { max-width: none; }
+      .user-actions-row { justify-content: flex-start; }
+      /* 卡片化后取消横向最小宽度，避免出现横向滚动 */
+      .users-table table { min-width: 0; }
+      .users-table tbody td .user-identity { justify-items: end; }
+    }
   </style>
 </head>
 <body>
   <header class="shell-header"></header>
   <main class="page">
-    <div class="page-title"><div><h1>用户管理</h1><p>管理控制台成员、角色和登录状态。</p></div></div>
-    <section class="card" style="margin-bottom:16px">
+    <div class="page-title page-hero">
+      <div class="hero-copy"><h1>用户管理</h1><p>管理控制台成员、角色和登录状态；普通用户只能看到自己扫码添加的账号。</p></div>
+      <div class="hero-actions"><button class="btn primary" id="showCreateUser" type="button">新增用户</button></div>
+    </div>
+    <div class="grid-12">
+    <section class="card col-4">
       <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
         <div><h2 style="margin:0">账号隔离说明</h2><p class="description" style="margin:5px 0 0">普通用户登录后可以扫码添加账号、进入运行管理，但<b>只能看到和管理自己扫码添加的账号</b>（管理员的账号不会出现在他的列表里）。脚本等无会话接口默认仍能读到全部账号，账号拥有者可在工作台用「脚本可读」开关单独关闭。</p></div>
       </div>
     </section>
-    <section class="card" style="margin-bottom:16px">
+    <section class="card col-4">
       <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
         <div><h2 style="margin:0">注册策略</h2><p class="description" style="margin:5px 0 0">允许新用户从登录页自行注册，关闭后仅管理员可创建成员。注册需要邮箱验证，请先在下方配置邮件服务。</p></div>
         <label style="display:flex;align-items:center;gap:9px"><input id="registration" type="checkbox"> 开放注册</label>
       </div>
     </section>
-    <section class="card" style="margin-bottom:16px">
+    <section class="card col-4">
       <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
         <div>
           <h2 style="margin:0">邮件服务（SMTP）</h2>
@@ -60,23 +66,23 @@
         <button class="btn secondary" id="showSmtp" type="button">配置邮件服务</button>
       </div>
     </section>
+    </div>
     <div class="users-toolbar">
       <input class="input" id="searchUsers" type="search" placeholder="搜索用户名或显示名" aria-label="搜索用户">
       <div class="users-toolbar-actions">
         <span class="users-selection" id="selectionCount" role="status" aria-live="polite"></span>
         <button class="btn danger" id="deleteSelected" type="button" disabled>删除所选</button>
-        <button class="btn primary" id="showCreateUser" type="button">新增用户</button>
       </div>
     </div>
-    <section class="users-table" aria-label="用户列表">
-      <table><thead><tr><th class="col-select"><input type="checkbox" id="selectAllUsers" aria-label="全选当前列表的用户" title="全选"></th><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="usersBody"></tbody></table>
+    <section class="users-table table-card" aria-label="用户列表">
+      <table><thead><tr><th class="col-select"><input type="checkbox" id="selectAllUsers" aria-label="全选当前列表的用户" title="全选"></th><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>登录次数</th><th>操作</th></tr></thead><tbody id="usersBody"></tbody></table>
       <div class="empty-users" id="usersEmpty" hidden>没有符合条件的用户。</div>
     </section>
   </main>
 
   <dialog class="platform-dialog" id="createUserDialog">
     <form id="createUserForm" method="dialog">
-      <div class="platform-dialog-head"><div><h2>新增用户</h2><p>创建可登录 YYB Go 控制台的成员。</p></div><button class="platform-dialog-close" type="button" data-close-dialog aria-label="关闭">×</button></div>
+      <div class="platform-dialog-head"><div><h2>新增用户</h2><p>创建可登录 wxcode-YYB 控制台的成员。</p></div><button class="platform-dialog-close" type="button" data-close-dialog aria-label="关闭">×</button></div>
       <div class="platform-dialog-body">
         <div class="field"><label for="newUsername">用户名</label><input class="input" id="newUsername" autocomplete="off" minlength="3" maxlength="64" required></div>
         <div class="field"><label for="newDisplayName">显示名</label><input class="input" id="newDisplayName" maxlength="100" required></div>
@@ -136,7 +142,7 @@
     function renderUsers() {
       const query = $("searchUsers").value.trim().toLowerCase();
       const users = state.users.filter(user => !query || user.username.toLowerCase().includes(query) || (user.display_name || "").toLowerCase().includes(query));
-      $("usersBody").innerHTML = users.map(user => `<tr class="${isSelected(user.id) ? "selected" : ""}"><td class="col-select" data-label="选择"><input type="checkbox" data-select-id="${user.id}" aria-label="选择用户 ${escapeHTML(user.display_name || user.username)}" ${isSelected(user.id) ? "checked" : ""}></td><td data-label="用户"><div class="user-identity"><strong>${escapeHTML(user.display_name || user.username)}</strong><small>${escapeHTML(user.username)} · ID ${user.id}</small></div></td><td data-label="角色"><span class="role-badge ${user.role}">${user.role === "admin" ? "管理员" : "普通用户"}</span></td><td data-label="状态">${user.enabled ? "已启用" : "已停用"}</td><td data-label="最近登录">${formatTime(user.last_login_at)}</td><td data-label="操作"><div class="user-actions-row"><button class="btn secondary" data-action="role" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.role === "admin" ? "设为用户" : "设为管理员"}</button><button class="btn secondary" data-action="state" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.enabled ? "停用" : "启用"}</button><button class="btn secondary" data-action="password" data-id="${user.id}">重置密码</button><button class="btn danger" data-action="delete" data-id="${user.id}">删除</button></div></td></tr>`).join("");
+      $("usersBody").innerHTML = users.map(user => `<tr class="${isSelected(user.id) ? "selected" : ""}"><td class="col-select" data-label="选择"><input type="checkbox" data-select-id="${user.id}" aria-label="选择用户 ${escapeHTML(user.display_name || user.username)}" ${isSelected(user.id) ? "checked" : ""}></td><td data-label="用户"><div class="user-identity"><strong>${escapeHTML(user.display_name || user.username)}</strong><small>${escapeHTML(user.username)} · ID ${user.id}</small></div></td><td data-label="角色"><span class="role-badge ${user.role}">${user.role === "admin" ? "管理员" : "普通用户"}</span></td><td data-label="状态">${user.enabled ? "已启用" : "已停用"}</td><td data-label="最近登录">${formatTime(user.last_login_at)}</td><td data-label="登录次数" class="numeric">${Number(user.login_count || 0)}</td><td data-label="操作"><div class="user-actions-row"><button class="btn secondary" data-action="role" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.role === "admin" ? "设为用户" : "设为管理员"}</button><button class="btn secondary" data-action="state" data-id="${user.id}" data-role="${user.role}" data-enabled="${user.enabled}">${user.enabled ? "停用" : "启用"}</button><button class="btn secondary" data-action="password" data-id="${user.id}">重置密码</button><button class="btn danger" data-action="delete" data-id="${user.id}">删除</button></div></td></tr>`).join("");
       $("usersEmpty").hidden = users.length > 0;
       syncSelectionUI();
     }
@@ -286,6 +292,6 @@
 
     load().then(() => api("/api/auth/smtp").then(renderSmtpState).catch(() => {})).catch(error => toast(error.message, true));
   </script>
-  <script src="/static/js/platform.js"></script>
+  <script src="/static/js/platform.js?v=20261112-graphite"></script>
 </body>
 </html>

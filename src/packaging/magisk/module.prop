@@ -1,0 +1,6 @@
+id=yyb_go
+name=wxcode-YYB
+version=dev
+versionCode=1
+author=wxcode-YYB
+description=Run wxcode-YYB as a Magisk late-start service on Android arm64.

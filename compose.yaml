@@ -1,5 +1,5 @@
 # ============================================================
-# YYB Go 网关 - 纯 Docker 部署
+# wxcode-YYB 网关 - 纯 Docker 部署
 #
 # 默认走「拉取预构建镜像」，一条命令即可启动：
 #     cp .env.example .env && docker compose up -d
@@ -59,6 +59,47 @@ services:
       YYB_ALLOW_REGISTRATION: ${YYB_ALLOW_REGISTRATION:-false}
       # 部署在反向代理后面时才开；直连暴露时保持 false，避免伪造 X-Forwarded-For
       YYB_TRUST_PROXY: ${YYB_TRUST_PROXY:-false}
+      # 注册邮箱验证码。任意一项留空则注册会被明确拒绝并提示联系管理员。
+      YYB_SMTP_HOST: ${YYB_SMTP_HOST:-}
+      YYB_SMTP_PORT: ${YYB_SMTP_PORT:-}
+      YYB_SMTP_USERNAME: ${YYB_SMTP_USERNAME:-}
+      YYB_SMTP_PASSWORD: ${YYB_SMTP_PASSWORD:-}
+      YYB_SMTP_FROM: ${YYB_SMTP_FROM:-}
+      YYB_SMTP_TLS: ${YYB_SMTP_TLS:-true}
+      TZ: ${TZ:-Asia/Shanghai}
+      # ---- 可选高级开关（全部可选，留空即用内置默认值）----
+      # 协议路由令牌：与 YYB_API_TOKEN 是两道独立的闸门，默认留空=不启用；
+      # 需要时再填随机长串，两边都配同一套即可。
+      YYB_PROTOCOL_TOKEN: ${YYB_PROTOCOL_TOKEN:-}
+      # 集成接口（/integration/*）的令牌，控制面调用时使用。
+      YYB_INTEGRATION_TOKEN: ${YYB_INTEGRATION_TOKEN:-}
+      # 同步到面板的账号引用方式：id（默认）或 openid。
+      YYB_QINGLONG_REF_MODE: ${YYB_QINGLONG_REF_MODE:-id}
+      # 青龙脚本仓库地址（运行管理按脚本目录建任务时用）。
+      YYB_QINGLONG_REPO: ${YYB_QINGLONG_REPO:-}
+      # 桌面微信快速授权（实验特性，默认关闭）。
+      YYB_ENABLE_PC_LOGIN: ${YYB_ENABLE_PC_LOGIN:-false}
+      # 协议设备标识：stable（每个账号固定设备，默认）/ random（旧行为）。
+      YYB_DEVICE_IDENTITY: ${YYB_DEVICE_IDENTITY:-stable}
+      # AS 刷新策略：legacy_auth（默认）/ source。
+      YYB_APPSTORE_REFRESH_MODE: ${YYB_APPSTORE_REFRESH_MODE:-legacy_auth}
+      # 掉线通知（账号授权失效时推送一次）：serverchan / pushplus / qywx，留空关闭。
+      YYB_NOTIFY_CHANNEL: ${YYB_NOTIFY_CHANNEL:-}
+      YYB_NOTIFY_TOKEN: ${YYB_NOTIFY_TOKEN:-}
+      YYB_NOTIFY_TOPIC: ${YYB_NOTIFY_TOPIC:-}
+      YYB_NOTIFY_ACCOUNT_PUSH: ${YYB_NOTIFY_ACCOUNT_PUSH:-true}
+      # 取码熔断/限速/登录预算（防封）。默认已开启，off 可回到旧行为。
+      YYB_CIRCUIT_BREAKER: ${YYB_CIRCUIT_BREAKER:-on}
+      YYB_CODE_MIN_GAP: ${YYB_CODE_MIN_GAP:-3s}
+      YYB_CODE_MAX_WAIT: ${YYB_CODE_MAX_WAIT:-20s}
+      YYB_LOGIN_BUDGET: ${YYB_LOGIN_BUDGET:-3}
+      YYB_LOGIN_WINDOW: ${YYB_LOGIN_WINDOW:-10m}
+      YYB_FRESH_SESSION_WINDOW: ${YYB_FRESH_SESSION_WINDOW:-}
+      YYB_CODE_DENY_APPIDS: ${YYB_CODE_DENY_APPIDS:-}
+      YYB_CODE_ALLOW_APPIDS: ${YYB_CODE_ALLOW_APPIDS:-}
+      YYB_CODE_DYNAMIC_DENY: ${YYB_CODE_DYNAMIC_DENY:-}
+      YYB_CODE_DYNAMIC_DENY_THRESHOLD: ${YYB_CODE_DYNAMIC_DENY_THRESHOLD:-}
+      # 版本检查与维护 socket（默认关闭；开了需要额外挂载 socket 所在目录）。
       GIN_MODE: release
     volumes:
       # 数据目录默认落在 compose 文件同级的 ./data 下；

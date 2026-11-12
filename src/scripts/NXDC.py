@@ -44,7 +44,7 @@ if len(SERVERS) == 0:
     print("192.168.1.21:8088")
     exit(1)
 
-print(f"✅ 读取到 {len(SERVERS)} 个 YYB Go 账号")
+print(f"✅ 读取到 {len(SERVERS)} 个 wxcode-YYB 账号")
 print("-" * 60 + "\n")
 
 PLUSPLUS_TOKEN = os.getenv("PLUSPLUS_TOKEN", "")
@@ -344,7 +344,7 @@ def get_code(server: str) -> str | None:
         return None
 
     url = f"http://{parsed_server}/wxapp/getCode"
-    print(f"[{parsed_server}] 请求YYB Go获取code：{url}")
+    print(f"[{parsed_server}] 请求wxcode-YYB获取code：{url}")
 
     try:
         res = requests.post(

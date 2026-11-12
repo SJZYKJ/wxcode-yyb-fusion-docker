@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(254) NULL UNIQUE,
     role ENUM('admin','user') NOT NULL DEFAULT 'user',
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    login_count BIGINT NOT NULL DEFAULT 0,
     last_login_at DATETIME(6) NULL,
     created_at DATETIME(6) NOT NULL,
     updated_at DATETIME(6) NOT NULL
@@ -51,6 +52,14 @@ CREATE TABLE IF NOT EXISTS auth_settings (
     setting_value VARCHAR(255) NOT NULL,
     updated_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS account_owners (
+    account_id BIGINT NOT NULL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    claimed_at DATETIME(6) NOT NULL,
+    CONSTRAINT fk_account_owners_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_account_owners_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
 const sqliteSchema = `
@@ -63,6 +72,7 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT NULL UNIQUE,
     role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','user')),
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    login_count INTEGER NOT NULL DEFAULT 0,
     last_login_at DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL
@@ -86,6 +96,13 @@ CREATE TABLE IF NOT EXISTS auth_settings (
     setting_value TEXT NOT NULL,
     updated_at DATETIME NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_owners (
+    account_id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    claimed_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_account_owners_user ON account_owners(user_id);
 `
 
 var ErrInvalidCredentials = errors.New("用户名或密码错误")
@@ -96,11 +113,14 @@ type Store struct {
 }
 
 type User struct {
-	ID          int64      `json:"id"`
-	Username    string     `json:"username"`
-	DisplayName string     `json:"display_name"`
-	Role        string     `json:"role"`
-	Enabled     bool       `json:"enabled"`
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+	Enabled     bool   `json:"enabled"`
+	// LoginCount 是累计登录成功次数（上游 v0.3.3 的 users.login_count），
+	// 控制台用户列表按它展示「登录次数」，UI 侧按 user.login_count || 0 渲染。
+	LoginCount  int64      `json:"login_count"`
 	LastLoginAt *time.Time `json:"last_login_at"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
@@ -117,6 +137,15 @@ type Session struct {
 }
 
 func Open(ctx context.Context, driver, dsn string) (*Store, error) {
+	return open(ctx, driver, dsn, true)
+}
+
+// OpenExisting skips schema initialization for local recovery commands.
+func OpenExisting(ctx context.Context, driver, dsn string) (*Store, error) {
+	return open(ctx, driver, dsn, false)
+}
+
+func open(ctx context.Context, driver, dsn string, migrate bool) (*Store, error) {
 	driver = strings.ToLower(strings.TrimSpace(driver))
 	if driver != "mysql" && driver != "sqlite" {
 		return nil, fmt.Errorf("unsupported auth database driver %q", driver)
@@ -135,6 +164,9 @@ func Open(ctx context.Context, driver, dsn string) (*Store, error) {
 	if err = db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect auth %s: %w", driver, err)
+	}
+	if !migrate {
+		return &Store{db: db, driver: driver}, nil
 	}
 	schema := mysqlSchema
 	if driver == "sqlite" {
@@ -159,6 +191,11 @@ func Open(ctx context.Context, driver, dsn string) (*Store, error) {
 	if err = migrateUsersEmail(ctx, db, driver); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate auth %s (users.email): %w", driver, err)
+	}
+	// users.login_count 同样是后加的列，老库必须显式补列。
+	if err = ensureLoginCountColumn(ctx, db, driver); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate auth %s (users.login_count): %w", driver, err)
 	}
 	return &Store{db: db, driver: driver}, nil
 }
@@ -187,6 +224,26 @@ func migrateUsersEmail(ctx context.Context, db *sql.DB, driver string) error {
 		if err != nil && isDuplicateError(err) {
 			return nil // 索引已存在
 		}
+		return err
+	default:
+		return nil
+	}
+}
+
+// ensureLoginCountColumn 给历史库补上 users.login_count 列（幂等）。
+//
+// 与 migrateUsersEmail 同一套写法：先探测列是否已经在，再 ALTER TABLE 补列，
+// 避免重复迁移时因 "duplicate column" 报错。
+func ensureLoginCountColumn(ctx context.Context, db *sql.DB, driver string) error {
+	if columnExists(ctx, db, "users", "login_count") {
+		return nil
+	}
+	switch driver {
+	case "sqlite":
+		_, err := db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN login_count INTEGER NOT NULL DEFAULT 0")
+		return err
+	case "mysql":
+		_, err := db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN login_count BIGINT NOT NULL DEFAULT 0")
 		return err
 	default:
 		return nil
@@ -310,9 +367,10 @@ func (s *Store) CreateUser(ctx context.Context, username, displayName, password,
 func (s *Store) Authenticate(ctx context.Context, username, password string) (*User, error) {
 	var user User
 	var hash string
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, display_name, password_hash, role, enabled,
+	err := s.db.QueryRowContext(ctx, `SELECT id, username, display_name, password_hash, role, enabled, login_count,
         last_login_at, created_at, updated_at FROM users WHERE username=?`, normalizeUsername(username)).Scan(
 		&user.ID, &user.Username, &user.DisplayName, &hash, &user.Role, &user.Enabled,
+		&user.LoginCount,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
@@ -322,7 +380,8 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*U
 		return nil, errors.New("账号已停用，请联系管理员")
 	}
 	now := time.Now().UTC()
-	_, _ = s.db.ExecContext(ctx, "UPDATE users SET last_login_at=?, updated_at=? WHERE id=?", now, now, user.ID)
+	_, _ = s.db.ExecContext(ctx, "UPDATE users SET last_login_at=?, login_count=login_count+1, updated_at=? WHERE id=?", now, now, user.ID)
+	user.LoginCount++
 	user.LastLoginAt = &now
 	return &user, nil
 }
@@ -350,12 +409,12 @@ func (s *Store) UserBySession(ctx context.Context, token string) (*User, *Sessio
 	hash := sha256.Sum256([]byte(token))
 	var user User
 	var session Session
-	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, u.display_name, u.role, u.enabled,
+	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, u.display_name, u.role, u.enabled, u.login_count,
         u.last_login_at, u.created_at, u.updated_at,
         s.id, s.user_id, s.user_agent, s.ip_address, s.expires_at, s.created_at, s.last_seen_at
         FROM user_sessions s JOIN users u ON u.id=s.user_id
         WHERE s.token_hash=? AND s.expires_at>?`, hash[:], time.Now().UTC()).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.Enabled,
+		&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.Enabled, &user.LoginCount,
 		&user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt,
 		&session.ID, &session.UserID, &session.UserAgent, &session.IPAddress, &session.ExpiresAt, &session.CreatedAt, &session.LastSeenAt,
 	)
@@ -439,7 +498,7 @@ func (s *Store) ChangePassword(ctx context.Context, userID int64, current, next 
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, username, display_name, role, enabled, last_login_at, created_at, updated_at FROM users ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, username, display_name, role, enabled, login_count, last_login_at, created_at, updated_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +506,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LoginCount, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -457,7 +516,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 
 func (s *Store) GetUser(ctx context.Context, id int64) (*User, error) {
 	var u User
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, display_name, role, enabled, last_login_at, created_at, updated_at FROM users WHERE id=?`, id).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, username, display_name, role, enabled, login_count, last_login_at, created_at, updated_at FROM users WHERE id=?`, id).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LoginCount, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
 	return &u, err
 }
 
@@ -499,6 +558,41 @@ func (s *Store) AdminResetPassword(ctx context.Context, id int64, password strin
 	return tx.Commit()
 }
 
+// RecoverAdminPassword is only exposed through the local command line. It must
+// never create a user, promote a member, or re-enable a disabled administrator.
+func (s *Store) RecoverAdminPassword(ctx context.Context, username, password string) error {
+	if err := ValidatePassword(password); err != nil {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var id int64
+	if err = tx.QueryRowContext(ctx, "SELECT id FROM users WHERE username=? AND role='admin' AND enabled=TRUE", normalizeUsername(username)).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("未找到该名称的启用管理员；请核对用户名和认证数据库配置")
+		}
+		return err
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE users SET password_hash=?, updated_at=? WHERE id=? AND role='admin' AND enabled=TRUE", string(hash), time.Now().UTC(), id)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		return errors.New("管理员状态已变化，密码未重置")
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM user_sessions WHERE user_id=?", id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) DeleteUser(ctx context.Context, actorID, id int64) error {
 	if actorID == id {
 		return errors.New("不能删除当前登录用户")
@@ -512,6 +606,106 @@ func (s *Store) DeleteUser(ctx context.Context, actorID, id int64) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// ClaimAccount binds a YYB account to the user who added it. Existing claims
+// are intentionally immutable so a re-scan cannot silently move an account.
+func (s *Store) ClaimAccount(ctx context.Context, accountID, userID int64) error {
+	now := time.Now().UTC()
+	query := `INSERT INTO account_owners (account_id, user_id, claimed_at) VALUES (?, ?, ?)`
+	if s.driver == "sqlite" {
+		query = `INSERT OR IGNORE INTO account_owners (account_id, user_id, claimed_at) VALUES (?, ?, ?)`
+	}
+	_, err := s.db.ExecContext(ctx, query, accountID, userID, now)
+	if err != nil && s.driver == "mysql" && isDuplicateError(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *Store) AccountOwner(ctx context.Context, accountID int64) (int64, error) {
+	var userID int64
+	err := s.db.QueryRowContext(ctx, "SELECT user_id FROM account_owners WHERE account_id=?", accountID).Scan(&userID)
+	return userID, err
+}
+
+// Remove a known ownership claim before an explicit account merge releases ID.
+func (s *Store) RemoveAccountOwner(ctx context.Context, accountID, expectedUserID int64) error {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM account_owners WHERE account_id=? AND user_id=?", accountID, expectedUserID)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) AccountCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT user_id, COUNT(*) FROM account_owners GROUP BY user_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[int64]int{}
+	for rows.Next() {
+		var userID int64
+		var count int
+		if err := rows.Scan(&userID, &count); err != nil {
+			return nil, err
+		}
+		counts[userID] = count
+	}
+	return counts, rows.Err()
+}
+
+// AccountIDs returns the YYB account IDs owned by a user. Ownership is kept
+// separate from account credentials so the HTTP layer can scope account work
+// to the signed-in user.
+func (s *Store) AccountIDs(ctx context.Context, userID int64) (map[int64]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT account_id FROM account_owners WHERE user_id=?", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make(map[int64]struct{})
+	for rows.Next() {
+		var accountID int64
+		if err := rows.Scan(&accountID); err != nil {
+			return nil, err
+		}
+		ids[accountID] = struct{}{}
+	}
+	return ids, rows.Err()
+}
+
+// RemapAccountIDs updates ownership records after the YYB account database
+// compacts its primary keys. Ownership lives in a separate database, so this
+// operation is intentionally explicit and collision-safe.
+func (s *Store) RemapAccountIDs(ctx context.Context, mapping map[int64]int64) error {
+	if len(mapping) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for oldID := range mapping {
+		if _, err = tx.ExecContext(ctx, "UPDATE account_owners SET account_id=? WHERE account_id=?", -oldID, oldID); err != nil {
+			return err
+		}
+	}
+	for oldID, newID := range mapping {
+		if _, err = tx.ExecContext(ctx, "UPDATE account_owners SET account_id=? WHERE account_id=?", newID, -oldID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // RegistrationEnabled 读取注册开关，缺省值为 false（关闭）。
@@ -809,8 +1003,8 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (*User, error) {
 func (s *Store) GetUserWithEmail(ctx context.Context, id int64) (*User, string, error) {
 	var u User
 	var email sql.NullString
-	err := s.db.QueryRowContext(ctx, userSelectColumns+", email FROM users WHERE id=?", id).Scan(
-		&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &email)
+	err := s.db.QueryRowContext(ctx, userEmailColumns+" WHERE id=?", id).Scan(
+		&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LoginCount, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &email)
 	if err != nil {
 		return nil, "", err
 	}
@@ -819,7 +1013,7 @@ func (s *Store) GetUserWithEmail(ctx context.Context, id int64) (*User, string, 
 
 // ListUsersWithEmail 返回用户列表及各自的邮箱（未设置时为空串）。
 func (s *Store) ListUsersWithEmail(ctx context.Context) ([]User, map[int64]string, error) {
-	rows, err := s.db.QueryContext(ctx, userSelectColumns+", email FROM users ORDER BY id")
+	rows, err := s.db.QueryContext(ctx, userEmailColumns+" ORDER BY id")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -829,7 +1023,7 @@ func (s *Store) ListUsersWithEmail(ctx context.Context) ([]User, map[int64]strin
 	for rows.Next() {
 		var u User
 		var email sql.NullString
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &email); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LoginCount, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &email); err != nil {
 			return nil, nil, err
 		}
 		users = append(users, u)
@@ -839,13 +1033,19 @@ func (s *Store) ListUsersWithEmail(ctx context.Context) ([]User, map[int64]strin
 }
 
 // userSelectColumns 是 users 表的公共列清单，保证各处扫描顺序一致。
-const userSelectColumns = `SELECT id, username, display_name, role, enabled, last_login_at, created_at, updated_at FROM users`
+const userSelectColumns = `SELECT id, username, display_name, role, enabled, login_count, last_login_at, created_at, updated_at FROM users`
+
+// userEmailColumns 与 userSelectColumns 列顺序一致，只在末尾多一列 email。
+//
+// 注意：userSelectColumns 本身已经带 `FROM users`，所以「带邮箱」的两处查询不能再用
+// userSelectColumns+", email FROM users …" 拼接（那样会拼出两个 FROM）。
+const userEmailColumns = `SELECT id, username, display_name, role, enabled, login_count, last_login_at, created_at, updated_at, email FROM users`
 
 // scanUser 执行一条返回单行用户数据的查询并扫描。
 func (s *Store) scanUser(ctx context.Context, query string, args ...any) (*User, error) {
 	var u User
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
-		&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+		&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.Enabled, &u.LoginCount, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

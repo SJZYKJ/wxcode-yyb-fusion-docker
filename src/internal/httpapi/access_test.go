@@ -87,11 +87,13 @@ func decodeData(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 	}
 }
 
+// accountListResponse 对应 /accounts 返回的 store.AccountPublic。
+// 归并不再写 wechat_accounts.owner_user_id（上游 0.3.x 用 auth.account_owners），
+// 所以列表里没有 owner_user_id 字段，归属要用 app.auth.AccountOwner 单独查。
 type accountListResponse []struct {
-	ID          int64  `json:"id"`
-	OpenID      string `json:"openid"`
-	OwnerUserID *int64 `json:"owner_user_id"`
-	APIShared   bool   `json:"api_shared"`
+	ID        int64  `json:"id"`
+	OpenID    string `json:"openid"`
+	APIShared bool   `json:"api_shared"`
 }
 
 type instancesResponse struct {
@@ -107,9 +109,16 @@ func seedAccount(t *testing.T, app *App, openid string, ownerUserID *int64) int6
 	t.Helper()
 	nickname := "nick-" + openid
 	status := "alive"
-	acc, err := app.db.UpsertAccount(context.Background(), openid, "{}", nil, &nickname, nil, nil, nil, &status, ownerUserID)
+	acc, err := app.db.UpsertAccount(context.Background(), openid, "{}", nil, &nickname, nil, nil, nil, &status)
 	if err != nil {
 		t.Fatalf("UpsertAccount(%s): %v", openid, err)
+	}
+	// 归属改由上游 auth.account_owners 记录（ClaimAccount），
+	// 不再作为 wechat_accounts 的列存在。
+	if ownerUserID != nil {
+		if err := app.auth.ClaimAccount(context.Background(), acc.ID, *ownerUserID); err != nil {
+			t.Fatalf("ClaimAccount(%s -> user %d): %v", openid, *ownerUserID, err)
+		}
 	}
 	return acc.ID
 }
@@ -159,7 +168,18 @@ func TestAccountOwnershipIsolatesConsoleButKeepsAPIReadable(t *testing.T) {
 
 	// 三个账号：alice 自己的、别人的、以及无归属的历史账号。
 	aliceOwner := createdUser.ID
-	otherOwner := int64(9999)
+	// 归属记录在 auth.account_owners 里，user_id 有外键约束，
+	// 所以「别人」必须是真实用户，不能再用 9999 这种裸 ID。
+	createdOther := serveJSON(t, handler, http.MethodPost, "/api/auth/users",
+		`{"username":"bob","display_name":"Bob","password":"bob-password-1","role":"user"}`, adminCookie)
+	if createdOther.Code != http.StatusCreated {
+		t.Fatalf("POST /api/auth/users(bob) status = %d body = %s", createdOther.Code, createdOther.Body.String())
+	}
+	var otherUser struct {
+		ID int64 `json:"id"`
+	}
+	decodeData(t, createdOther, &otherUser)
+	otherOwner := otherUser.ID
 	aliceAccountID := seedAccount(t, app, "openid-alice", &aliceOwner)
 	otherAccountID := seedAccount(t, app, "openid-other", &otherOwner)
 	seedAccount(t, app, "openid-legacy", nil)
@@ -174,8 +194,11 @@ func TestAccountOwnershipIsolatesConsoleButKeepsAPIReadable(t *testing.T) {
 	// 普通用户只看自己那 1 个。
 	var aliceList accountListResponse
 	decodeData(t, serveJSON(t, handler, http.MethodGet, "/accounts", "", aliceCookie), &aliceList)
-	if len(aliceList) != 1 || aliceList[0].OpenID != "openid-alice" || aliceList[0].OwnerUserID == nil || *aliceList[0].OwnerUserID != aliceOwner {
-		t.Fatalf("alice list = %#v, want only openid-alice owned by %d", aliceList, aliceOwner)
+	if len(aliceList) != 1 || aliceList[0].OpenID != "openid-alice" {
+		t.Fatalf("alice list = %#v, want only openid-alice", aliceList)
+	}
+	if owner, err := app.auth.AccountOwner(context.Background(), aliceList[0].ID); err != nil || owner != aliceOwner {
+		t.Fatalf("account_owners[%d] = %d, err = %v, want owner %d", aliceList[0].ID, owner, err, aliceOwner)
 	}
 
 	// 公开 API（无会话）默认仍能读到全部账号（含别人的、无归属的）。
@@ -189,14 +212,19 @@ func TestAccountOwnershipIsolatesConsoleButKeepsAPIReadable(t *testing.T) {
 	}
 
 	// 普通用户不能操作归属他人的账号。
+	// 合并后（上游 0.3.x 的 resolveAccountRef + 下游 accountVisible）对不可见账号
+	// 统一返回 404「账号不存在」，不再回 403，避免向会话用户泄露账号归属信息。
 	crossOp := serveJSON(t, handler, http.MethodPut, "/accounts/share",
 		`{"ref":"`+"openid-other"+`","shared":false}`, aliceCookie)
-	if crossOp.Code != http.StatusForbidden {
-		t.Fatalf("cross-owner share status = %d, want 403 (body=%s)", crossOp.Code, crossOp.Body.String())
+	if crossOp.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner share status = %d, want 404 (body=%s)", crossOp.Code, crossOp.Body.String())
 	}
 	crossDelete := serveJSON(t, handler, http.MethodDelete, "/accounts?ref=openid-other", "", aliceCookie)
-	if crossDelete.Code != http.StatusForbidden {
-		t.Fatalf("cross-owner delete status = %d, want 403 (body=%s)", crossDelete.Code, crossDelete.Body.String())
+	if crossDelete.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner delete status = %d, want 404 (body=%s)", crossDelete.Code, crossDelete.Body.String())
+	}
+	if acc, err := app.db.GetAccount(context.Background(), otherAccountID); err != nil || !acc.APIShared {
+		t.Fatalf("cross-owner share must not mutate other account: api_shared = %v, err = %v", acc.APIShared, err)
 	}
 
 	// 普通用户可以操作自己的账号：关闭「脚本可读」后该账号从公开 API 消失。
@@ -272,16 +300,21 @@ func TestConsoleRoutesAreAvailableToNormalUsers(t *testing.T) {
 		}
 	}
 
-	// 管理员专属：页面重定向到工作台 /，接口返回 403。
+	// 管理员专属：普通用户进入管理员页面会被 303 重定向回工作台 /，
+	// 管理接口才是 403（见下面的 /api/auth/users）。
 	page := serveJSON(t, handler, http.MethodGet, "/users", "", aliceCookie)
 	if page.Code != http.StatusSeeOther || page.Header().Get("Location") != "/" {
 		t.Fatalf("normal user GET /users status = %d, Location = %q (want 303 -> /)", page.Code, page.Header().Get("Location"))
 	}
-	for _, api := range []string{"/api/auth/users", "/api/qinglong/config"} {
-		rec := serveJSON(t, handler, http.MethodGet, api, "", aliceCookie)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("normal user GET %s status = %d, want 403", api, rec.Code)
-		}
+	adminOnly := serveJSON(t, handler, http.MethodGet, "/api/auth/users", "", aliceCookie)
+	if adminOnly.Code != http.StatusForbidden {
+		t.Fatalf("normal user GET /api/auth/users status = %d, want 403", adminOnly.Code)
+	}
+	// 管理员级配置（含 SMTP 密钥、青龙 Cookie）挂在 adminRoutes 分组上（下游安全定制），
+	// 普通用户直接 403，不下发任何降级视图。
+	restricted := serveJSON(t, handler, http.MethodGet, "/api/qinglong/config", "", aliceCookie)
+	if restricted.Code != http.StatusForbidden {
+		t.Fatalf("normal user GET /api/qinglong/config = %d %s, want 403", restricted.Code, restricted.Body.String())
 	}
 
 	// /api/auth/me 必须暴露 role，前端据此隐藏管理员入口。

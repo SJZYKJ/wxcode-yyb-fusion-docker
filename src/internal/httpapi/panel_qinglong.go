@@ -188,6 +188,16 @@ func (d *qingLongDriver) UpdateEnvEntry(ctx context.Context, env qingLongEnv, ne
 	return d.UpdateEnv(ctx, env.ID, env.Name, newValue, env.Remarks)
 }
 
+// DeleteEnvs removes environment entries whose value would otherwise become
+// empty. QingLong rejects an empty value on PUT, so cleanup must delete the
+// final YYB_SERVER entry instead of updating it to an empty string.
+func (d *qingLongDriver) DeleteEnvs(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return d.request(ctx, http.MethodDelete, "/open/envs", ids, nil)
+}
+
 func (d *qingLongDriver) SetEnvsEnabled(ctx context.Context, ids []int64, enabled bool) error {
 	path := "/open/envs/disable"
 	if enabled {
@@ -218,148 +228,6 @@ func (d *qingLongDriver) SetNamedEnvsEnabled(ctx context.Context, names []string
 		return nil
 	}
 	return d.SetEnvsEnabled(ctx, ids, enabled)
-}
-
-// 列出面板脚本目录里的脚本文件。
-//
-// 主路径是 OpenAPI 的 `/open/scripts/files`（返回目录树，目录节点带 children）。
-// 老版本的青龙没有这个端点，会返回 404 —— 上层据此降级为「从定时任务反推脚本」。
-func (d *qingLongDriver) ListScripts(ctx context.Context) ([]qingLongScript, error) {
-	var raw json.RawMessage
-	if err := d.request(ctx, http.MethodGet, "/open/scripts/files", nil, &raw); err != nil {
-		// 少数版本把脚本列表挂在 /open/scripts 上
-		if fallbackErr := d.request(ctx, http.MethodGet, "/open/scripts", nil, &raw); fallbackErr != nil {
-			return nil, err
-		}
-	}
-	if len(raw) == 0 || string(raw) == "null" {
-		return []qingLongScript{}, nil
-	}
-
-	var nodes []qingLongScriptNode
-	if err := json.Unmarshal(raw, &nodes); err != nil {
-		// 兼容「扁平字符串数组」与「树被包在 data/files 里」两种返回体
-		var flat []string
-		if flatErr := json.Unmarshal(raw, &flat); flatErr == nil {
-			out := make([]qingLongScript, 0, len(flat))
-			for _, item := range flat {
-				if script := newQingLongScript(item); script.Path != "" {
-					out = append(out, script)
-				}
-			}
-			return out, nil
-		}
-		var page struct {
-			Data  []qingLongScriptNode `json:"data"`
-			Files []qingLongScriptNode `json:"files"`
-		}
-		if pageErr := json.Unmarshal(raw, &page); pageErr != nil {
-			return nil, err
-		}
-		if page.Data != nil {
-			nodes = page.Data
-		} else {
-			nodes = page.Files
-		}
-	}
-
-	// 青龙新版本（>=2.x）的 /open/scripts/files 对「新建/空目录」经常返回空的
-	// children，甚至目录节点没有 children 字段，导致老逻辑把目录误当成叶子文件丢弃。
-	// 这里改为「主动递归」：对每个目录节点用 ?path=<dir> 单层拉取子内容，彻底绕开
-	// children 为空的坑。目录节点一律用 type=="directory" 识别，路径以 key 为准。
-	out := make([]qingLongScript, 0, len(nodes))
-	d.collectScriptFilesRecursive(ctx, nodes, "", &out)
-	return out, nil
-}
-
-type qingLongScriptNode struct {
-	Title    string               `json:"title"`
-	Value    string               `json:"value"`
-	Key      string               `json:"key"`
-	Type     string               `json:"type"`
-	Parent   string               `json:"parent"`
-	Children []qingLongScriptNode `json:"children"`
-}
-
-// collectScriptFilesRecursive 递归展开脚本目录。
-//
-// 优先用 node.Key（青龙权威的相对路径）还原路径；只有拿不到 key 时才退回
-// value/title 再拼 parent。目录用 type=="directory" 或「有非空 children」双重识别，
-// 且即便 children 为空也会用 ?path= 再拉一次，确保新建目录里的脚本不漏。
-func (d *qingLongDriver) collectScriptFilesRecursive(ctx context.Context, nodes []qingLongScriptNode, parent string, out *[]qingLongScript) {
-	for _, node := range nodes {
-		path := scriptNodePath(node, parent)
-		if isScriptDirNode(node) {
-			// 目录：优先用已经递归在 children 里的内容；没有就主动按 path 拉一层。
-			children := node.Children
-			if len(children) == 0 && path != "" {
-				children = d.listScriptDir(ctx, path)
-			}
-			if len(children) > 0 {
-				d.collectScriptFilesRecursive(ctx, children, path, out)
-			}
-			continue
-		}
-		if path != "" {
-			*out = append(*out, newQingLongScript(path))
-		}
-	}
-}
-
-// isScriptDirNode 判断节点是不是目录：青龙新版用 type=="directory"；老版本靠非空
-// children。二者任一成立都按目录处理，避免空目录/新目录被当成文件丢弃。
-func isScriptDirNode(node qingLongScriptNode) bool {
-	if node.Type == "directory" || node.Type == "dir" {
-		return true
-	}
-	return len(node.Children) > 0
-}
-
-// listScriptDir 用 ?path= 单层拉取某个目录下的内容，拿不到就返回空（不报错，
-// 保持降级链路稳定——上层还有 ListCrons 反推兜底）。
-func (d *qingLongDriver) listScriptDir(ctx context.Context, dir string) []qingLongScriptNode {
-	var raw json.RawMessage
-	query := "/open/scripts/files?path=" + url.QueryEscape(dir)
-	if err := d.request(ctx, http.MethodGet, query, nil, &raw); err != nil {
-		return nil
-	}
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil
-	}
-	var nodes []qingLongScriptNode
-	if err := json.Unmarshal(raw, &nodes); err != nil {
-		return nil
-	}
-	return nodes
-}
-
-// 从节点里还原出「相对脚本根目录的路径」。
-//
-// 各版本给的字段不一样：新版本直接给完整相对路径（value/key），
-// 老版本的子节点只有 title（文件名）+ parent（所在目录），得靠它们拼出来。
-func scriptNodePath(node qingLongScriptNode, parent string) string {
-	raw := strings.TrimSpace(node.Value)
-	if raw == "" {
-		raw = strings.TrimSpace(node.Key)
-	}
-	if raw == "" {
-		raw = strings.TrimSpace(node.Title)
-	}
-	raw = strings.Trim(strings.ReplaceAll(raw, `\`, "/"), "/")
-	if raw == "" {
-		return ""
-	}
-	if strings.Contains(raw, "/") {
-		return raw
-	}
-	// 只有文件名时，节点自带的 parent 比继承下来的更准
-	if own := strings.Trim(strings.ReplaceAll(strings.TrimSpace(node.Parent), `\`, "/"), "/"); own != "" {
-		return own + "/" + raw
-	}
-	if parent != "" {
-		return parent + "/" + raw
-	}
-	return raw
 }
 
 func (d *qingLongDriver) ListCrons(ctx context.Context, search string) ([]qingLongCron, error) {
@@ -397,7 +265,15 @@ func (d *qingLongDriver) CreateCron(ctx context.Context, name, command, schedule
 		"log_name":    logName,
 	}
 	var raw json.RawMessage
-	if err := d.request(ctx, http.MethodPost, "/open/crons", body, &raw); err != nil {
+	err := d.request(ctx, http.MethodPost, "/open/crons", body, &raw)
+	if isQingLongLogNameValidationError(err) {
+		// Recent QingLong releases reject the optional log_name field. Retry
+		// with the core cron schema so task creation remains compatible.
+		delete(body, "log_name")
+		raw = nil
+		err = d.request(ctx, http.MethodPost, "/open/crons", body, &raw)
+	}
+	if err != nil {
 		return nil, err
 	}
 	var cron qingLongCron
@@ -413,7 +289,20 @@ func (d *qingLongDriver) CreateCron(ctx context.Context, name, command, schedule
 
 func (d *qingLongDriver) UpdateCron(ctx context.Context, id int64, name, command, schedule, taskBefore, logName string) error {
 	body := map[string]any{"id": id, "name": name, "command": command, "schedule": schedule, "task_before": taskBefore, "log_name": logName}
-	return d.request(ctx, http.MethodPut, "/open/crons", body, nil)
+	err := d.request(ctx, http.MethodPut, "/open/crons", body, nil)
+	if isQingLongLogNameValidationError(err) {
+		delete(body, "log_name")
+		err = d.request(ctx, http.MethodPut, "/open/crons", body, nil)
+	}
+	return err
+}
+
+func isQingLongLogNameValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "log_name") && strings.Contains(message, "not allowed")
 }
 
 func (d *qingLongDriver) SetCronsEnabled(ctx context.Context, ids []int64, enabled bool) error {
@@ -462,15 +351,8 @@ func (d *qingLongDriver) LogDetail(ctx context.Context, dir, filename string) (s
 	}
 	var out string
 	reqPath := "/open/logs/detail?" + url.Values{"path": {logPath}}.Encode()
-	if err := d.request(ctx, http.MethodGet, reqPath, nil, &out); err == nil && out != "" {
-		return out, nil
+	if err := d.request(ctx, http.MethodGet, reqPath, nil, &out); err != nil {
+		return "", err
 	}
-	altPath := "/open/logs/" + url.PathEscape(dir)
-	if filename != "" {
-		altPath += "/" + url.PathEscape(filename)
-	}
-	if err := d.request(ctx, http.MethodGet, altPath, nil, &out); err == nil {
-		return out, nil
-	}
-	return "", d.request(ctx, http.MethodGet, reqPath, nil, &out)
+	return out, nil
 }

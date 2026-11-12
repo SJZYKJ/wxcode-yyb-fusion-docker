@@ -149,7 +149,7 @@ func TestDefaultAccount(t *testing.T) {
 		t.Fatalf("expected 'no native' error, got %v", err)
 	}
 
-	acc1, err := app.db.UpsertAccount(ctx, "openid-expired", "buf1", nil, nil, nil, nil, nil, &expired, nil)
+	acc1, err := app.db.UpsertAccount(ctx, "openid-expired", "buf1", nil, nil, nil, nil, nil, &expired)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestDefaultAccount(t *testing.T) {
 	}
 
 	// 2 accounts: alive beats non-alive
-	_, err = app.db.UpsertAccount(ctx, "openid-alive", "buf2", nil, nil, nil, nil, nil, &alive, nil)
+	_, err = app.db.UpsertAccount(ctx, "openid-alive", "buf2", nil, nil, nil, nil, nil, &alive)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,11 +184,11 @@ func TestUnifiedLoginGetWithRef(t *testing.T) {
 
 	ctx := context.Background()
 	alive := "alive"
-	acc1, err := app.db.UpsertAccount(ctx, "openid-one", "buf1", nil, nil, nil, nil, nil, &alive, nil)
+	acc1, err := app.db.UpsertAccount(ctx, "openid-one", "buf1", nil, nil, nil, nil, nil, &alive)
 	if err != nil {
 		t.Fatal(err)
 	}
-	acc2, err := app.db.UpsertAccount(ctx, "openid-two", "buf2", nil, nil, nil, nil, nil, &alive, nil)
+	acc2, err := app.db.UpsertAccount(ctx, "openid-two", "buf2", nil, nil, nil, nil, nil, &alive)
 	if err != nil {
 		t.Fatal(err)
 	}

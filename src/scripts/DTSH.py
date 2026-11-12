@@ -33,7 +33,7 @@ if len(CODE_URL_LIST) == 0:
     print("http://192.168.1.7:8088/login")
     exit(1)
 
-print(f"✅ 读取到 {len(CODE_URL_LIST)} 个 YYB Go 账号")
+print(f"✅ 读取到 {len(CODE_URL_LIST)} 个 wxcode-YYB 账号")
 for item in CODE_URL_LIST:
     print(f" - {item}")
 print("-" * 50)
@@ -212,7 +212,7 @@ def parse_yyb_go_entry(raw_value):
 
 
 def get_wx_code(code_url):
-    """通过YYB Go获取对应账号的微信Code【强制直连，不走代理】"""
+    """通过wxcode-YYB获取对应账号的微信Code【强制直连，不走代理】"""
     server, ref = parse_yyb_go_entry(code_url)
     if not server:
         print("❌ 获取Code失败：服务地址为空")

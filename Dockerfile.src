@@ -1,4 +1,4 @@
-# YYB Go 融合网关（源码构建版）
+# wxcode-YYB 融合网关（源码构建版）
 # 构建: docker build -f Dockerfile.src -t local/wxcode-yyb-gateway:src .
 # 说明: src/ 为融合版完整源码（与预编译产物同源）
 FROM golang:1.23-alpine AS build

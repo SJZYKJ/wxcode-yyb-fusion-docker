@@ -1,0 +1,155 @@
+name: Build Magisk Module
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '模块版本，例如 0.1.5'
+        required: false
+        type: string
+      version_code:
+        description: '可选的 Magisk versionCode'
+        required: false
+        type: string
+      publish_release:
+        description: '创建或更新对应的 GitHub Release'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+    tags:
+      - 'magisk-v*'
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - 'VERSION'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'resource/static/**'
+      - 'resource/templates/**'
+      - 'packaging/magisk/**'
+      - 'scripts/build-magisk.sh'
+      - 'tools/release_notes.py'
+      - 'tests/test_release_notes.py'
+      - 'CHANGELOG.md'
+      - '.github/workflows/magisk-publish.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: magisk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-magisk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository with Retry
+        run: |
+          set -Eeuo pipefail
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          for attempt in 1 2 3; do
+            if git fetch --depth=1 origin "$GITHUB_SHA" && git checkout --force --detach FETCH_HEAD; then
+              exit 0
+            fi
+            [[ "$attempt" == 3 ]] && exit 1
+            sleep $((attempt * 10))
+          done
+
+      - name: Resolve Module Version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_VERSION_CODE: ${{ inputs.version_code }}
+          INPUT_PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          set -Eeuo pipefail
+          publish=false
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#magisk-v}"
+            tag="$GITHUB_REF_NAME"
+            publish=true
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -n "${INPUT_VERSION:-}" ]]; then
+            version="$INPUT_VERSION"
+            tag="magisk-v$version"
+            publish="${INPUT_PUBLISH_RELEASE:-false}"
+          else
+            version="$(tr -d '[:space:]' < VERSION)"
+            tag=""
+          fi
+
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            calculated_code=$((10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]}))
+          else
+            echo "Version must use x.y.z format: $version" >&2
+            exit 2
+          fi
+
+          version_code="${INPUT_VERSION_CODE:-$calculated_code}"
+          [[ "$version_code" =~ ^[1-9][0-9]*$ ]] || {
+            echo "versionCode must be a positive integer: $version_code" >&2
+            exit 2
+          }
+
+          {
+            echo "version=$version"
+            echo "version_code=$version_code"
+            echo "tag=$tag"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate Release Notes
+        if: steps.version.outputs.publish == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          MODULE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          python3 ./tools/release_notes.py \
+            --version "$MODULE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --kind magisk \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"
+
+      - name: Build and Validate ARM64 Module
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp || '' }}
+        run: |
+          set -Eeuo pipefail
+          go version
+          command -v zip
+          command -v unzip
+          python3 -m unittest tests.test_release_notes -v
+          bash ./scripts/build-magisk.sh arm64
+
+      - name: Publish GitHub Release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          MODULE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          asset="dist/yyb-go-magisk-arm64-$MODULE_VERSION.zip"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "Magisk v$MODULE_VERSION" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+            gh release upload "$RELEASE_TAG" "$asset" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$asset" \
+              --target "$GITHUB_SHA" \
+              --title "Magisk v$MODULE_VERSION" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi

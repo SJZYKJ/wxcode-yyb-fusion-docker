@@ -325,7 +325,7 @@ def get_code(server: str) -> str | None:
         return None
 
     url = f"http://{parsed_server}/wxapp/getCode"
-    print(f"[{parsed_server}] 请求YYB Go获取code：{url}")
+    print(f"[{parsed_server}] 请求wxcode-YYB获取code：{url}")
 
     try:
         res = requests.post(

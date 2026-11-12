@@ -7,15 +7,80 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"time"
 )
 
 var (
-	type8Prefix = []byte{0x00, 0x00, 0x00, 0x10, 0x08, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x12}
-	earlyAlert  = []byte{0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x01}
+	ErrShortlinkPayload = errors.New("AppData decrypt/parse failed")
+	type8Prefix         = []byte{0x00, 0x00, 0x00, 0x10, 0x08, 0x00, 0x00, 0x00, 0x0b, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x12}
+	earlyAlert          = []byte{0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x01}
 )
+
+// ShortlinkResponseError separates unauthenticated MMTLS records from an
+// authenticated record whose application ciphertext/payload cannot be read.
+// Stage is fixed diagnostic metadata; it contains no response bytes or keys.
+type ShortlinkResponseError struct{ Stage string }
+
+func (e *ShortlinkResponseError) Error() string {
+	if e.Stage == "mmtls_records" {
+		return "response missing ServerHello/AppData"
+	}
+	return fmt.Sprintf("%s: stage=%s", ErrShortlinkPayload, e.Stage)
+}
+func (e *ShortlinkResponseError) Unwrap() error {
+	// Missing records were not a payload-rebuild signal before diagnostics
+	// were added. Preserve that recovery policy for other protocol operations.
+	if e.Stage == "mmtls_records" {
+		return nil
+	}
+	return ErrShortlinkPayload
+}
+
+// ShortlinkRejectedError is an authenticated header rejection without an
+// encrypted application body. The fixed code carries no request material.
+type ShortlinkRejectedError struct {
+	Code      int64
+	Transport bool
+}
+
+func (e *ShortlinkRejectedError) Error() string {
+	layer := "application"
+	if e.Transport {
+		layer = "transport"
+	}
+	return fmt.Sprintf("shortlink %s rejected: code=%d", layer, e.Code)
+}
+
+// Retain the payload error category; application -14 is excluded from rebuilds.
+func (e *ShortlinkRejectedError) Unwrap() error { return ErrShortlinkPayload }
+
+// A bare authenticated application -14 has also been observed between two
+// successful calls using one session. It alone does not justify deleting the
+// shared session or rotating account credentials. A later real ManualAuth
+// rejection remains a separate recovery case.
+func IsApplicationRequestRejection(err error) bool {
+	switch e := err.(type) {
+	case *ShortlinkRejectedError:
+		return !e.Transport && e.Code == -14
+	case interface{ Unwrap() []error }:
+		children := e.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !IsApplicationRequestRejection(child) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return IsApplicationRequestRejection(e.Unwrap())
+	}
+	return false
+}
 
 func build0RTTRequest(entry pskEntry, envelope []byte) ([]byte, []byte, []byte, []byte, error) {
 	psk, err := hex.DecodeString(entry.PreSharedKey)
@@ -71,9 +136,18 @@ func httpPost(path, host string, body []byte) []byte {
 	return append([]byte(head), body...)
 }
 
-func send0RTT(ctx context.Context, targets []Target, entry pskEntry, recvKey, envelope []byte, timeout time.Duration, tcpProxy string, fallbackDirect bool) ([]byte, []byte, error) {
+// A failed connection has not sent the authorization payload, so selecting
+// another endpoint remains safe even when response-based replay is disabled.
+type shortlinkDialError struct{ error }
+
+func (e *shortlinkDialError) Unwrap() error { return e.error }
+
+func send0RTT(ctx context.Context, targets []Target, entry pskEntry, recvKey, envelope []byte, timeout time.Duration, tcpProxy string, fallbackDirect, allowReplay bool) ([]byte, []byte, error) {
 	var last error
 	for _, t := range targets {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		code, resp, err := send0RTTRaw(ctx, t, entry, recvKey, envelope, timeout, tcpProxy, fallbackDirect)
 		if err == nil && (len(code) > 0 || len(resp) > 0) {
 			return code, resp, nil
@@ -82,6 +156,10 @@ func send0RTT(ctx context.Context, targets []Target, entry pskEntry, recvKey, en
 			last = err
 		} else {
 			last = fmt.Errorf("ShortLink response did not contain application data")
+		}
+		var dialErr *shortlinkDialError
+		if !allowReplay && !errors.As(err, &dialErr) {
+			return nil, nil, fmt.Errorf("ShortLink response failed (authorization not replayed): %w", last)
 		}
 	}
 	if last == nil {
@@ -99,18 +177,18 @@ func send0RTTRaw(ctx context.Context, target Target, entry pskEntry, recvKey, en
 	req := httpPost(path, "shortcloud.weixin.com", body)
 	conn, err := dialTCP(ctx, target.IP, target.Port, timeout, tcpProxy, fallbackDirect)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, &shortlinkDialError{err}
 	}
 	defer conn.Close()
-	if timeout > 0 {
-		_ = conn.SetDeadline(time.Now().Add(timeout))
-	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
+	_ = conn.SetDeadline(ioDeadline(ctx, timeout))
 	if _, err = conn.Write(req); err != nil {
 		return nil, nil, err
 	}
 	raw, err := io.ReadAll(conn)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("ShortLink response from %s:%d failed: %w", target.IP, target.Port, err)
 	}
 	_, responseBody := splitHTTP(raw)
 	if len(responseBody) == 0 {
@@ -136,13 +214,14 @@ func parse0RTTResponse(rbody, psk, pskCH, type8, recvKey []byte) ([]byte, []byte
 		}
 	}
 	if sh == nil || appdata == nil {
-		return nil, nil, fmt.Errorf("response missing ServerHello/AppData")
+		return nil, nil, &ShortlinkResponseError{Stage: "mmtls_records"}
 	}
 	candidates := [][]byte{
 		bytes.Join([][]byte{pskCH, sh}, nil),
 		bytes.Join([][]byte{pskCH, type8, sh}, nil),
 		bytes.Join([][]byte{pskCH, sh, type8}, nil),
 	}
+	authenticated := false
 	for _, trans := range candidates {
 		h := sha256.Sum256(trans)
 		hk := derivePSKOneWayKeys(psk, labelHandshakeKeys, h[:])
@@ -151,15 +230,41 @@ func parse0RTTResponse(rbody, psk, pskCH, type8, recvKey []byte) ([]byte, []byte
 			if err != nil {
 				continue
 			}
+			authenticated = true
 			if sl, err := parseShortlink(ad); err == nil {
+				if rejection := shortlinkHeaderRejection(sl.Body); rejection != nil {
+					return nil, nil, rejection
+				}
 				if resp, err := sessionDecrypt(sl.Body, recvKey); err == nil {
 					return extractCode(resp), resp, nil
 				}
+			}
+			if rejection := shortlinkHeaderRejection(ad); rejection != nil {
+				return nil, nil, rejection
 			}
 			if resp, err := sessionDecrypt(ad, recvKey); err == nil {
 				return extractCode(resp), resp, nil
 			}
 		}
 	}
-	return nil, nil, fmt.Errorf("AppData decrypt/parse failed")
+	stage := "mmtls_decrypt"
+	if authenticated {
+		stage = "session_payload"
+	}
+	return nil, nil, &ShortlinkResponseError{Stage: stage}
+}
+
+func shortlinkHeaderRejection(body []byte) error {
+	fields, _, size, err := decodeWpkgHead(body)
+	if err != nil || size != len(body) {
+		return nil
+	}
+	var causes []error
+	if code := int64(fields[4]); code != 0 {
+		causes = append(causes, &ShortlinkRejectedError{Code: code, Transport: true})
+	}
+	if code := int64(fields[23]); code != 0 {
+		causes = append(causes, &ShortlinkRejectedError{Code: code})
+	}
+	return errors.Join(causes...)
 }

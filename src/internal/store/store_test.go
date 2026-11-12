@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -111,5 +112,398 @@ VALUES(7, 1, 12345, '', '{"ready":true}', ?, 20, 20);
 	setting, err := db.GetSetting(ctx, "qinglong_url")
 	if err != nil || setting != "http://qinglong:5700" {
 		t.Fatalf("GetSetting() = %q, %v", setting, err)
+	}
+}
+
+func TestAccountPublicRecommendsRescanAfterTwentyFiveDays(t *testing.T) {
+	oldObservation := time.Now().Add(-26 * 24 * time.Hour).Unix()
+	account := &WechatAccount{Credentials: map[string]any{
+		"refreshtoken":              "refresh",
+		"refresh_token_observed_at": float64(oldObservation),
+	}}
+
+	public := account.Public()
+	if !public.RescanRecommended {
+		t.Fatal("RescanRecommended = false, want true")
+	}
+	if public.RefreshTokenObservedAt == nil || *public.RefreshTokenObservedAt != oldObservation {
+		t.Fatalf("RefreshTokenObservedAt = %#v, want %d", public.RefreshTokenObservedAt, oldObservation)
+	}
+
+	account.Credentials["refresh_token_observed_at"] = time.Now().Add(-24 * 24 * time.Hour).Unix()
+	if account.Public().RescanRecommended {
+		t.Fatal("RescanRecommended = true before 25 days")
+	}
+}
+
+func TestAccountPublicDoesNotPublishInventedChannelLifetimes(t *testing.T) {
+	for _, provider := range []string{"ldplayer", "qbbrowser"} {
+		account := &WechatAccount{Credentials: map[string]any{"provider": provider, "expires_at": time.Now().Unix() + 86400, "expires_in": 86400, "refresh_refreshed_at": time.Now().Unix()}}
+		p := account.Public()
+		if p.CredentialExpiresAt != nil || p.CredentialExpiresIn != 0 {
+			t.Fatalf("%s still publishes invented expiry", provider)
+		}
+	}
+}
+
+func TestGameAssistPublicPreservesExpirySource(t *testing.T) {
+	issued := time.Now().Add(-3 * time.Hour).Unix()
+	account := &WechatAccount{Credentials: map[string]any{"provider": "gameassist", "expires_in": 30 * 86400, "expires_at": issued + 30*86400}}
+	public := account.Public()
+	if public.CredentialExpiresAt == nil || *public.CredentialExpiresAt != issued+7200 {
+		t.Fatal("legacy refresh schedule still presents the scan window")
+	}
+	account.Credentials["expiry_source"] = "upstream"
+	public = account.Public()
+	if public.CredentialExpiresAt == nil || *public.CredentialExpiresAt != issued+30*86400 {
+		t.Fatal("explicit upstream lifetime was replaced by the historical default correction")
+	}
+}
+
+func TestSetAccountStatusExpiredClearsCredentials(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	status := "alive"
+	account, err := db.UpsertAccount(ctx, "expired-openid", "login-buffer", nil, nil, nil, nil, map[string]any{
+		"refreshtoken":              "refresh-token",
+		"refresh_token_observed_at": time.Now().Unix(),
+		"expires_at":                time.Now().Add(time.Hour).Unix(),
+	}, &status)
+	if err != nil {
+		t.Fatalf("UpsertAccount() error = %v", err)
+	}
+	if err := db.SetAccountStatus(ctx, account.ID, "expired"); err != nil {
+		t.Fatalf("SetAccountStatus() error = %v", err)
+	}
+	updated, err := db.GetAccount(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("GetAccount() error = %v", err)
+	}
+	if updated.LoginBuffer != "" || updated.Credentials != nil || updated.Status == nil || *updated.Status != "expired" {
+		t.Fatalf("expired account still retains credentials: %+v", updated)
+	}
+}
+
+func TestUpsertAccountReusesLowestFreeID(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	first, err := db.UpsertAccount(ctx, "openid-1", "buffer", nil, nil, nil, nil, nil, nil)
+	if err != nil || first.ID != 1 {
+		t.Fatalf("first account = %+v, err=%v", first, err)
+	}
+	if err := db.DeleteAccount(ctx, first.ID); err != nil {
+		t.Fatalf("DeleteAccount() error = %v", err)
+	}
+	recreated, err := db.UpsertAccount(ctx, "openid-2", "buffer", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("recreated account error = %v", err)
+	}
+	if recreated.ID != 1 {
+		t.Fatalf("recreated account id = %d, want 1", recreated.ID)
+	}
+}
+
+func TestUpsertAccountDoesNotConsumeIDOnDuplicate(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	status := "alive"
+	first, err := db.UpsertAccount(ctx, "same-openid", "buffer-1", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("first UpsertAccount() error = %v", err)
+	}
+	updated, err := db.UpsertAccount(ctx, "same-openid", "buffer-2", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("duplicate UpsertAccount() error = %v", err)
+	}
+	if updated.ID != first.ID || updated.LoginBuffer != "buffer-2" {
+		t.Fatalf("duplicate upsert = id %d/%d buffer %q", first.ID, updated.ID, updated.LoginBuffer)
+	}
+	next, err := db.UpsertAccount(ctx, "next-openid", "buffer-3", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("next UpsertAccount() error = %v", err)
+	}
+	if next.ID != first.ID+1 {
+		t.Fatalf("next account id = %d, want %d", next.ID, first.ID+1)
+	}
+}
+
+func TestAccountLinkLifecycleAndIDCompaction(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	first, err := db.UpsertAccount(ctx, "link-openid-1", "buffer-1", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("seed first account: %v", err)
+	}
+	second, err := db.UpsertAccount(ctx, "link-openid-2", "buffer-2", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("seed second account: %v", err)
+	}
+	if err := db.DeleteAccount(ctx, first.ID); err != nil {
+		t.Fatalf("delete first account: %v", err)
+	}
+	expires := time.Now().Add(time.Hour).Unix()
+	link, err := db.CreateAccountLink(ctx, "hash-for-compaction", "add", second.ID, nil, "", expires)
+	if err != nil {
+		t.Fatalf("CreateAccountLink() error = %v", err)
+	}
+	found, err := db.GetAccountLinkByHash(ctx, "hash-for-compaction")
+	if err != nil || found.ID != link.ID {
+		t.Fatalf("GetAccountLinkByHash() = %#v, %v", found, err)
+	}
+	if ok, err := db.ConsumeAccountLink(ctx, link.ID); err != nil || !ok {
+		t.Fatalf("first ConsumeAccountLink() = %v, %v", ok, err)
+	}
+	if ok, err := db.ConsumeAccountLink(ctx, link.ID); err != nil || ok {
+		t.Fatalf("second ConsumeAccountLink() = %v, %v", ok, err)
+	}
+	if _, err := db.CompactAccountIDs(ctx); err != nil {
+		t.Fatalf("CompactAccountIDs() error = %v", err)
+	}
+	compacted, err := db.GetAccountLink(ctx, link.ID)
+	if err != nil {
+		t.Fatalf("link after compaction: %v", err)
+	}
+	if compacted.AccountID != 1 {
+		t.Fatalf("link account id after compaction = %d, want 1", compacted.AccountID)
+	}
+}
+
+func TestExpiredAccountLinkCannotBeConsumed(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	account, err := db.UpsertAccount(ctx, "expired-link-openid", "buffer", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	link, err := db.CreateAccountLink(ctx, "expired-link-hash", "update", account.ID, nil, account.OpenID, time.Now().Add(-time.Minute).Unix())
+	if err != nil {
+		t.Fatalf("CreateAccountLink() error = %v", err)
+	}
+	if ok, err := db.ConsumeAccountLink(ctx, link.ID); err != nil || ok {
+		t.Fatalf("ConsumeAccountLink(expired) = %v, %v", ok, err)
+	}
+}
+
+func TestAccountLinkCleanupRemovesConsumedRevokedAndExpired(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	account, err := db.UpsertAccount(ctx, "cleanup-link-openid", "buffer", nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	now := time.Now().Unix()
+	used, err := db.CreateAccountLink(ctx, "cleanup-used", "update", account.ID, nil, account.OpenID, now+3600)
+	if err != nil {
+		t.Fatalf("create used link: %v", err)
+	}
+	if ok, err := db.ConsumeAccountLink(ctx, used.ID); err != nil || !ok {
+		t.Fatalf("ConsumeAccountLink() = %v, %v", ok, err)
+	}
+	revoked, err := db.CreateAccountLink(ctx, "cleanup-revoked", "update", account.ID, nil, account.OpenID, now+3600)
+	if err != nil {
+		t.Fatalf("create revoked link: %v", err)
+	}
+	if err := db.RevokeAccountLink(ctx, revoked.ID, nil); err != nil {
+		t.Fatalf("RevokeAccountLink() error = %v", err)
+	}
+	if _, err := db.GetAccountLink(ctx, revoked.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("revoked link still exists: %v", err)
+	}
+	_, err = db.CreateAccountLink(ctx, "cleanup-expired", "update", account.ID, nil, account.OpenID, now-1)
+	if err != nil {
+		t.Fatalf("create expired link: %v", err)
+	}
+	removed, err := db.PurgeExpiredAccountLinks(ctx)
+	if err != nil {
+		t.Fatalf("PurgeExpiredAccountLinks() error = %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("PurgeExpiredAccountLinks() removed %d links, want 2", removed)
+	}
+	items, err := db.ListAccountLinks(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListAccountLinks() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("remaining account links = %d, want 0", len(items))
+	}
+	// The next link can reuse the released management ID rather than growing
+	// forever after one-time links are consumed.
+	reused, err := db.CreateAccountLink(ctx, "cleanup-reused", "update", account.ID, nil, account.OpenID, now+3600)
+	if err != nil {
+		t.Fatalf("create reused link: %v", err)
+	}
+	if reused.ID != 1 {
+		t.Fatalf("reused link ID = %d, want 1", reused.ID)
+	}
+}
+
+func TestUpsertAccountReusesGapAfterDelete(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	status := "alive"
+	first, err := db.UpsertAccount(ctx, "gap-openid-1", "buffer-1", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("first UpsertAccount() error = %v", err)
+	}
+	second, err := db.UpsertAccount(ctx, "gap-openid-2", "buffer-2", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("second UpsertAccount() error = %v", err)
+	}
+	if err := db.DeleteAccount(ctx, first.ID); err != nil {
+		t.Fatalf("DeleteAccount() error = %v", err)
+	}
+	reused, err := db.UpsertAccount(ctx, "gap-openid-3", "buffer-3", nil, nil, nil, nil, nil, &status)
+	if err != nil {
+		t.Fatalf("reused UpsertAccount() error = %v", err)
+	}
+	if reused.ID != first.ID || second.ID != 2 {
+		t.Fatalf("gap reuse IDs = first:%d second:%d reused:%d", first.ID, second.ID, reused.ID)
+	}
+}
+
+func TestIncompleteAccountCleanupProtectsValidAccounts(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	unknown := "unknown"
+	if _, err = db.UpsertAccount(ctx, "incomplete-openid", "", nil, nil, nil, nil, nil, &unknown); err != nil {
+		t.Fatalf("seed incomplete account: %v", err)
+	}
+	valid := "alive"
+	if _, err = db.UpsertAccount(ctx, "valid-openid", "buffer", nil, nil, nil, nil, nil, &valid); err != nil {
+		t.Fatalf("seed valid account: %v", err)
+	}
+	candidates, err := db.ListIncompleteAccounts(ctx)
+	if err != nil || len(candidates) != 1 || candidates[0].OpenID != "incomplete-openid" {
+		t.Fatalf("cleanup candidates = %#v, err = %v", candidates, err)
+	}
+	removed, err := db.DeleteIncompleteAccounts(ctx, []int64{candidates[0].ID})
+	if err != nil || len(removed) != 1 {
+		t.Fatalf("removed = %#v, err = %v", removed, err)
+	}
+	if _, err = db.GetAccountByOpenID(ctx, "valid-openid"); err != nil {
+		t.Fatalf("valid account was removed: %v", err)
+	}
+}
+
+func TestUpsertAccountRejectsEmptyOpenID(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	if _, err = db.UpsertAccount(context.Background(), "  ", "buffer", nil, nil, nil, nil, nil, nil); err == nil {
+		t.Fatal("UpsertAccount() accepted empty openid")
+	}
+}
+
+func TestCompactAccountIDsRemapsChildren(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	for _, item := range []struct {
+		id     int
+		openid string
+	}{
+		{1, "compact-1"}, {3, "compact-3"}, {5, "compact-5"},
+	} {
+		_, err = db.sql.ExecContext(ctx, `INSERT INTO wechat_accounts
+			(id, openid, login_buffer, status, created_at, updated_at) VALUES(?,?,?,?,?,?)`,
+			item.id, item.openid, "buffer", "alive", 1, 1)
+		if err != nil {
+			t.Fatalf("seed account %d: %v", item.id, err)
+		}
+	}
+	if _, err = db.sql.ExecContext(ctx, `INSERT INTO sessions
+		(wechat_account_id, tcp_proxy, session_blob, expires_at, created_at, updated_at)
+		VALUES(5, '', '{}', ?, 1, 1)`, time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if _, err = db.sql.ExecContext(ctx, `INSERT INTO account_script_jobs
+		(account_id, script_key, ql_cron_id, schedule, created_at, updated_at)
+		VALUES(5, 'test.py', 9, '* * * * *', 1, 1)`); err != nil {
+		t.Fatalf("seed script job: %v", err)
+	}
+	if _, err = db.sql.ExecContext(ctx, `INSERT INTO account_push_settings
+		(account_id, channel, token_env_name, topic_env_name, created_at, updated_at)
+		VALUES(5, 'none', '', '', 1, 1)`); err != nil {
+		t.Fatalf("seed push setting: %v", err)
+	}
+	if _, err = db.sql.ExecContext(ctx, `INSERT INTO account_proxy_settings
+		(account_id, mode, proxy_type, static_proxy, api_url, created_at, updated_at)
+		VALUES(5, 'direct', 'http', '', '', 1, 1)`); err != nil {
+		t.Fatalf("seed proxy setting: %v", err)
+	}
+	if _, err = db.sql.ExecContext(ctx, `INSERT INTO account_proxy_settings
+		(account_id, mode, proxy_type, static_proxy, api_url, protocol_proxy_mode, created_at, updated_at)
+		VALUES(3, 'api', 'http', '', 'https://proxy.example/account-3', 'direct', 1, 1)`); err != nil {
+		t.Fatalf("seed second proxy setting: %v", err)
+	}
+	mapping, err := db.CompactAccountIDs(ctx)
+	if err != nil {
+		t.Fatalf("CompactAccountIDs() error = %v", err)
+	}
+	if mapping[3] != 2 || mapping[5] != 3 || len(mapping) != 2 {
+		t.Fatalf("mapping = %#v", mapping)
+	}
+	var count int
+	if err = db.sql.QueryRowContext(ctx, "SELECT COUNT(*) FROM wechat_accounts WHERE id IN (1,2,3)").Scan(&count); err != nil || count != 3 {
+		t.Fatalf("compacted accounts = %d, err = %v", count, err)
+	}
+	for _, table := range []string{"sessions", "account_script_jobs", "account_push_settings", "account_proxy_settings"} {
+		var id int64
+		column := "account_id"
+		if table == "sessions" {
+			column = "wechat_account_id"
+		}
+		if err = db.sql.QueryRowContext(ctx, "SELECT "+column+" FROM "+table+" ORDER BY "+column+" DESC LIMIT 1").Scan(&id); err != nil || (id != 2 && id != 3) {
+			t.Fatalf("%s reference = %d, err = %v", table, id, err)
+		}
+	}
+	var proxyURL string
+	setting, err := db.GetAccountProxySetting(ctx, 2)
+	if err != nil || setting.ProtocolProxyMode != "direct" {
+		t.Fatalf("account 3 routing policy moved to ID 2 = %#v, %v", setting, err)
+	}
+	if err = db.sql.QueryRowContext(ctx, "SELECT api_url FROM account_proxy_settings WHERE account_id=2").Scan(&proxyURL); err != nil || proxyURL != "https://proxy.example/account-3" {
+		t.Fatalf("account 3 proxy moved to ID 2 = %q, err = %v", proxyURL, err)
+	}
+	if err = db.sql.QueryRowContext(ctx, "SELECT api_url FROM account_proxy_settings WHERE account_id=3").Scan(&proxyURL); err != nil || proxyURL != "" {
+		t.Fatalf("account 5 proxy association lost = %q, err = %v", proxyURL, err)
 	}
 }

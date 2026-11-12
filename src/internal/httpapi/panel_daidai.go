@@ -204,11 +204,24 @@ func (d *daidaiDriver) UpsertEnv(ctx context.Context, name, value, remarks strin
 }
 
 func (d *daidaiDriver) UpdateEnv(ctx context.Context, id int64, name, value, remarks string) error {
-	return d.UpsertEnv(ctx, name, value, remarks)
+	if id <= 0 {
+		return fmt.Errorf("呆呆面板环境变量 ID 无效")
+	}
+	body := map[string]string{"name": name, "value": value, "remarks": remarks}
+	return d.request(ctx, http.MethodPut, fmt.Sprintf("/api/v1/envs/%d", id), body, nil)
 }
 
 func (d *daidaiDriver) UpdateEnvEntry(ctx context.Context, env qingLongEnv, newValue string) error {
-	return d.UpsertEnv(ctx, env.Name, newValue, env.Remarks)
+	return d.UpdateEnv(ctx, env.ID, env.Name, newValue, env.Remarks)
+}
+
+func (d *daidaiDriver) DeleteEnvs(ctx context.Context, ids []int64) error {
+	for _, id := range ids {
+		if err := d.request(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/envs/%d", id), nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *daidaiDriver) SetEnvsEnabled(ctx context.Context, ids []int64, enabled bool) error {
@@ -246,11 +259,6 @@ func (d *daidaiDriver) SetNamedEnvsEnabled(ctx context.Context, names []string, 
 		return nil
 	}
 	return d.SetEnvsEnabled(ctx, ids, enabled)
-}
-
-// 代代面板没有「列脚本文件」的接口，显式返回不支持，让上层降级为从定时任务反推。
-func (d *daidaiDriver) ListScripts(ctx context.Context) ([]qingLongScript, error) {
-	return nil, errPanelScriptsUnsupported
 }
 
 func (d *daidaiDriver) ListCrons(ctx context.Context, search string) ([]qingLongCron, error) {

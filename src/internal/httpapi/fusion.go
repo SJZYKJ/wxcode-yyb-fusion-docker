@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -194,11 +195,43 @@ func (a *App) nativeCodeWithRef(r *http.Request, ref, appID string) (map[string]
 		// 不能当作上游调用失败降级成 502。
 		return nil, "", accountAccessDeniedError{msg: err.Error()}
 	}
-	result, err := a.invokeWXApp(ctx, acc, appID, nil, a.invokeGetCode)
+	// 编队（fleet）必须和 /wxapp/getCode 走同一条派发：同一微信的多渠道账号
+	// 绑成一个编队后，请求要在成员间轮转、成员被上游拒绝时切下一个身份。
+	// 这里若直接 invokeWXApp，/login（wxcode 兼容取码）就成了绕过编队的旁路：
+	// 成员账号会被直接调用（编队语义禁止直接调用成员），主账号也不再轮转。
+	// 无编队的账号 invokeWithFleet 等价于 invokeWXApp，行为不变。
+	result, err := a.invokeWithFleet(ctx, acc, appID, nil, a.invokeGetCode)
 	if err != nil {
 		return nil, "", err
 	}
 	return result, acc.OpenID, nil
+}
+
+// writeNativeCallError 把取码失败映射成 HTTP 语义（下游定制）：
+// 账号隔离拒绝（未共享 / 不属于当前会话 / 不存在）→ 403/404，
+// 其余按上游调用失败 → 502，避免把“越权”报成“服务端错误”。
+func writeNativeCallError(w http.ResponseWriter, err error) {
+	var denied accountAccessDeniedError
+	if errors.As(err, &denied) {
+		status := http.StatusForbidden
+		if strings.Contains(denied.msg, "not found") || strings.Contains(denied.msg, "不存在") {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, denied.msg)
+		return
+	}
+	// 编队成员不能直接调用（与 /wxapp/getCode 的 409 语义一致）。这里必须
+	// 显式映射：否则成员 ref 会被报成 502，脚本只会当作服务端故障反复重试。
+	var member *fleetMemberReferenceError
+	if errors.As(err, &member) {
+		writeRawJSON(w, http.StatusConflict, apiEnvelope{
+			Code: http.StatusConflict,
+			Msg:  member.Error(),
+			Data: map[string]any{"primary_ref": member.PrimaryID, "member_ref_not_allowed": true},
+		})
+		return
+	}
+	writeError(w, http.StatusBadGateway, err.Error())
 }
 
 // accountAccessDeniedError marks account-resolution failures (not shared,

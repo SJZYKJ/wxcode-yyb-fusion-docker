@@ -12,11 +12,18 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+
+	"yyb_go/internal/pcmgr"
 )
 
 const (
 	clientVersion = 524545
 	appVersion    = 1901
+
+	// clientVersionDefault mirrors clientVersion for HTTPDNS queries; kept as a
+	// separate name to document that the newdns client version must track the
+	// ilink client version used in the wpkg headers.
+	clientVersionDefault = clientVersion
 
 	transferCmd  = 0x0b41
 	jsLoginCmdID = 1029
@@ -52,9 +59,10 @@ type loginMeta struct {
 }
 
 type manualAuthTemp struct {
-	Ephemeral *ecdh.PrivateKey
-	OKM       []byte
-	CompBody  []byte
+	Ephemeral     *ecdh.PrivateKey
+	OKM           []byte
+	CompBody      []byte
+	RequestCipher []byte
 }
 
 type AppSession struct {
@@ -65,6 +73,16 @@ type AppSession struct {
 	Ticket    []byte
 	DeviceID  []byte
 	HostAppID []byte
+}
+
+// ManualAuthRejectedError is returned before a JSAPI operation is sent.
+// A rejected login buffer is different from an incompatible response schema.
+type ManualAuthRejectedError struct {
+	Code int64
+}
+
+func (e *ManualAuthRejectedError) Error() string {
+	return fmt.Sprintf("ManualAuth rejected: code=%d", e.Code)
 }
 
 func parseLoginBuffer(loginBufferB64 string) (loginMeta, error) {
@@ -94,8 +112,7 @@ func randomAppDeviceID() ([]byte, error) {
 func randomSessDevice() []byte {
 	mac := make([]byte, 6)
 	_, _ = rand.Read(mac)
-	mac[0] = (mac[0] | 0x02) & 0xfe
-	return []byte(fmt.Sprintf("%02X-%02X-%02X-%02X-%02X-%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]))
+	return formatSessDevice(mac)
 }
 
 func buildManualAuthRequest(loginBufferB64 string, appDeviceID []byte) ([]byte, error) {
@@ -103,13 +120,15 @@ func buildManualAuthRequest(loginBufferB64 string, appDeviceID []byte) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	appBase := append(pbLen(1, appDeviceID), pbVar(2, appVersion)...)
+	appBase := pbLen(1, appDeviceID)
 	thirdApp := pbLen(1, meta.Ticket)
 	out := make([]byte, 0, len(appBase)+len(thirdApp)+32)
 	out = append(out, pbLen(1, appBase)...)
+	// The official ManualAuthRequest serializer emits version as outer field 2;
+	// AppBaseRequest only contains the device ID. See the native layout fixture.
+	out = append(out, pbVar(2, appVersion)...)
 	out = append(out, pbLen(3, thirdApp)...)
 	out = append(out, pbVar(4, 4)...)
-	out = append(out, pbLen(6, nil)...)
 	out = append(out, pbVar(7, 0)...)
 	out = append(out, pbVar(8, 6)...)
 	return out, nil
@@ -166,6 +185,13 @@ func buildLoginBody(loginBufferB64 string, deviceID, appDeviceID []byte, temp *m
 }
 
 func hybridECDHEncrypt(plaintext, serverPub []byte, temp *manualAuthTemp) ([]byte, error) {
+	return hybridECDHEncryptWithKey(plaintext, serverPub, nil, temp)
+}
+
+func hybridECDHEncryptWithKey(plaintext, serverPub, encKey []byte, temp *manualAuthTemp) ([]byte, error) {
+	if len(encKey) != 0 && len(encKey) != 24 {
+		return nil, fmt.Errorf("invalid hybrid session key length")
+	}
 	eph, ephPub, err := generateECDH()
 	if err != nil {
 		return nil, err
@@ -188,9 +214,16 @@ func hybridECDHEncrypt(plaintext, serverPub []byte, temp *manualAuthTemp) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	var encSession []byte
+	if len(encKey) > 0 {
+		encSession, err = aesGCMEncryptLayout(encKey, hash1[:], cek)
+		if err != nil {
+			return nil, err
+		}
+	}
 	prk := hkdfExtract(ilinkHKDFSalt, cek)
 	okm := hkdfExpand(prk, hash1[:], 56)
-	hash2 := sha256.Sum256(bytes.Join([][]byte{[]byte("1"), []byte("415"), ephPub, encCEK}, nil))
+	hash2 := sha256.Sum256(bytes.Join([][]byte{[]byte("1"), []byte("415"), ephPub, encCEK, encSession}, nil))
 	comp := lz4AllLiteral(plaintext)
 	encBody, err := aesGCMEncryptLayout(okm[:24], hash2[:], comp)
 	if err != nil {
@@ -201,12 +234,13 @@ func hybridECDHEncrypt(plaintext, serverPub []byte, temp *manualAuthTemp) ([]byt
 		temp.Ephemeral = eph
 		temp.OKM = okm
 		temp.CompBody = comp
+		temp.RequestCipher = encBody
 	}
 	out := make([]byte, 0, len(ecdhKey)+len(encCEK)+len(encBody)+16)
 	out = append(out, pbVar(1, 1)...)
 	out = append(out, pbLen(2, ecdhKey)...)
 	out = append(out, pbLen(3, encCEK)...)
-	out = append(out, pbLen(4, nil)...)
+	out = append(out, pbLen(4, encSession)...)
 	out = append(out, pbLen(5, encBody)...)
 	return out, nil
 }
@@ -321,6 +355,11 @@ func hybridECDHDecrypt(response []byte, temp *manualAuthTemp) ([]byte, error) {
 
 func extractSession(mar []byte) (AppSession, error) {
 	F := pbParse(mar)
+	if base, ok := F[1].([]byte); ok {
+		if code, ok := pbParse(base)[1].(int64); ok && code != 0 {
+			return AppSession{}, &ManualAuthRejectedError{Code: code}
+		}
+	}
 	f3, ok := F[3].([]byte)
 	if !ok {
 		return AppSession{}, fmt.Errorf("ManualAuthResponse missing f3")
@@ -490,22 +529,32 @@ func parseRawResponse(codeOrJSON, resp []byte) map[string]any {
 	return protobufToMap(resp)
 }
 
-func buildPhoneRequest(uin int64, appID string) []byte {
-	sessDevice := randomSessDevice()
+func buildPhoneRequest(uin int64, appID string, hostAppID, sessDevice []byte) []byte {
+	if len(sessDevice) == 0 {
+		sessDevice = randomSessDevice()
+	}
 	aid := []byte(appID)
 	body := make([]byte, 0, 140)
 	body = append(body, pbLen(1, sessionInfo(uint32(uin), unifiedPCWindows, sessDevice))...)
 	body = append(body, pbLen(2, aid)...)
+	if string(hostAppID) == pcmgr.HostAppID {
+		// PCMgr WMPF 14673 flue.dll: 0x12bc1f0 builds the shared
+		// JSOperateWxDataRequest (appid=2, JSON=3), then sends 1141.
+		body = append(body, pbLen(3, []byte(`{"api_name":"webapi_getuserwxphone","data":{},"env":1}`))...)
+		return buildJSAPIPlaintext(uin, appID, phoneURL, 1141, body, hostAppID, sessDevice)
+	}
 	body = append(body, pbVar(4, 1)...)
 	body = append(body, pbLen(5, nil)...)
 	body = append(body, pbLen(6, nil)...)
 	body = append(body, pbVar(7, 1)...)
-	return buildJSAPIPlaintext(uin, appID, phoneURL, phoneCmdID, body, nil, sessDevice)
+	return buildJSAPIPlaintext(uin, appID, phoneURL, phoneCmdID, body, hostAppID, sessDevice)
 }
 
-func buildOperateRequest(uin int64, appID string, payload map[string]any) ([]byte, error) {
+func buildOperateRequest(uin int64, appID string, payload map[string]any, hostAppID, sessDevice []byte) ([]byte, error) {
 	payload = extractOperatePayload(payload)
-	sessDevice := randomSessDevice()
+	if len(sessDevice) == 0 {
+		sessDevice = randomSessDevice()
+	}
 	aid := []byte(appID)
 	f3, err := json.Marshal(payload)
 	if err != nil {
@@ -517,8 +566,13 @@ func buildOperateRequest(uin int64, appID string, payload map[string]any) ([]byt
 	body = append(body, pbLen(3, f3)...)
 	body = append(body, pbLen(4, nil)...)
 	body = append(body, pbVar(5, 0)...)
-	body = append(body, pbVar(6, 0)...)
-	return buildJSAPIPlaintext(uin, appID, operateURL, operateCmdID, body, nil, sessDevice), nil
+	versionType := uint64(0)
+	if string(hostAppID) == pcmgr.HostAppID {
+		// Native PCMgr operate builder defaults versionType to release (1).
+		versionType = 1
+	}
+	body = append(body, pbVar(6, versionType)...)
+	return buildJSAPIPlaintext(uin, appID, operateURL, operateCmdID, body, hostAppID, sessDevice), nil
 }
 
 func extractOperatePayload(raw map[string]any) map[string]any {

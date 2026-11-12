@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: local/yyb-go:58492557cc66
+    image: ${YYB_IMAGE:-chungg/wxcode-yyb-fusion:latest}
     container_name: yyb-go
     restart: unless-stopped
     command:
@@ -14,10 +14,11 @@ services:
       - -resource-root
       - /app/resource
       - -keepalive-interval
-      - ${YYB_KEEPALIVE_INTERVAL:-30m}
+      - ${YYB_KEEPALIVE_INTERVAL:-2m}
       - -keepalive-ahead
-      - ${YYB_KEEPALIVE_AHEAD:-45m}
+      - ${YYB_KEEPALIVE_AHEAD:-4m}
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       PANEL_TYPE: ${PANEL_TYPE:-qinglong}
       QL_URL: ${QL_URL:-}
       QL_CLIENT_ID: ${QL_CLIENT_ID:-}
@@ -25,17 +26,41 @@ services:
       DAIDAI_URL: ${DAIDAI_URL:-}
       DAIDAI_APP_KEY: ${DAIDAI_APP_KEY:-}
       DAIDAI_APP_SECRET: ${DAIDAI_APP_SECRET:-}
+      ARCADIA_URL: ${ARCADIA_URL:-}
+      ARCADIA_TOKEN: ${ARCADIA_TOKEN:-}
       YYB_QINGLONG_SERVER: ${YYB_QINGLONG_SERVER:-yyb-go:8000}
+      YYB_QINGLONG_REPO: ${YYB_QINGLONG_REPO:-SuperNaiBA_YYB-GO-Script,qinglong/scripts}
       YYB_AUTH_DRIVER: ${YYB_AUTH_DRIVER:-}
       YYB_AUTH_DSN: ${YYB_AUTH_DSN:-}
       YYB_AUTH_MYSQL_DSN: ${YYB_AUTH_MYSQL_DSN:-}
       YYB_ADMIN_USER: ${YYB_ADMIN_USER:-}
       YYB_ADMIN_PASSWORD: ${YYB_ADMIN_PASSWORD:-}
+      YYB_ACCOUNT_LINK_KEY: ${YYB_ACCOUNT_LINK_KEY:-}
       YYB_COOKIE_SECURE: ${YYB_COOKIE_SECURE:-false}
+      YYB_PROTOCOL_TOKEN: ${YYB_PROTOCOL_TOKEN:-}
+      YYB_INTEGRATION_TOKEN: ${YYB_INTEGRATION_TOKEN:-}
+      YYB_QINGLONG_REF_MODE: ${YYB_QINGLONG_REF_MODE:-id}
+      YYB_ENABLE_PC_LOGIN: ${YYB_ENABLE_PC_LOGIN:-false}
+      YYB_APPSTORE_REFRESH_MODE: ${YYB_APPSTORE_REFRESH_MODE:-legacy_auth}
+      YYB_DEVICE_IDENTITY: ${YYB_DEVICE_IDENTITY:-stable}
+      YYB_NOTIFY_CHANNEL: ${YYB_NOTIFY_CHANNEL:-}
+      YYB_NOTIFY_TOKEN: ${YYB_NOTIFY_TOKEN:-}
+      YYB_NOTIFY_TOPIC: ${YYB_NOTIFY_TOPIC:-}
+      YYB_NOTIFY_ACCOUNT_PUSH: ${YYB_NOTIFY_ACCOUNT_PUSH:-true}
+      YYB_CIRCUIT_BREAKER: ${YYB_CIRCUIT_BREAKER:-on}
+      YYB_LOGIN_BUDGET: ${YYB_LOGIN_BUDGET:-3}
+      YYB_LOGIN_WINDOW: ${YYB_LOGIN_WINDOW:-10m}
+      YYB_CODE_MIN_GAP: ${YYB_CODE_MIN_GAP:-3s}
+      YYB_CODE_MAX_WAIT: ${YYB_CODE_MAX_WAIT:-20s}
+      YYB_FRESH_SESSION_WINDOW: ${YYB_FRESH_SESSION_WINDOW:-2m}
+      YYB_CODE_ALLOW_APPIDS: ${YYB_CODE_ALLOW_APPIDS:-}
+      YYB_CODE_DENY_APPIDS: ${YYB_CODE_DENY_APPIDS:-}
     volumes:
       - ./data/db:/app/resource/db
       - ./data/avatars:/app/resource/avatars
       - ./data/qr:/app/resource/qr
+    ports:
+      - "${YYB_BIND_ADDRESS:-0.0.0.0}:${YYB_PORT:-8000}:8000"
     networks:
       - qinglong
     healthcheck:
@@ -49,31 +74,7 @@ services:
     cap_drop:
       - ALL
 
-  yyb-web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
-    image: local/yyb-web:1.27
-    container_name: yyb-web
-    restart: unless-stopped
-    depends_on:
-      yyb-go:
-        condition: service_healthy
-    ports:
-      - "${YYB_BIND_ADDRESS:-0.0.0.0}:${YYB_PORT:-8000}:8080"
-    networks:
-      - qinglong
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - SETGID
-      - SETUID
-
 networks:
   qinglong:
     external: true
-    name: qinglong_default
+    name: ${YYB_DOCKER_NETWORK:-qinglong_default}

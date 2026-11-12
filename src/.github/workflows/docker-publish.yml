@@ -1,0 +1,169 @@
+name: Build and Publish Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: '镜像 Tag 标签 (例如: latest, v1.0.0)'
+        required: false
+        default: 'latest'
+        type: string
+      push_latest:
+        description: '是否同时标记为 latest'
+        required: false
+        default: true
+        type: boolean
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'VERSION'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'resource/**'
+      - 'docker-entrypoint.d/**'
+      - '.github/workflows/docker-publish.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Repository with Retry
+        run: |
+          set -Eeuo pipefail
+          git init .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          for attempt in 1 2 3; do
+            if git fetch --depth=1 origin "$GITHUB_SHA" && git checkout --force --detach FETCH_HEAD; then
+              exit 0
+            fi
+            [[ "$attempt" == 3 ]] && exit 1
+            sleep $((attempt * 10))
+          done
+
+      - name: Prepare Image Tags
+        id: meta
+        env:
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+          INPUT_PUSH_LATEST: ${{ inputs.push_latest }}
+        run: |
+          set -Eeuo pipefail
+          image="chungg/wxcode-yyb-fusion"
+          tags=()
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            image_tag="${INPUT_IMAGE_TAG:-latest}"
+            [[ "$image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || {
+              echo "Invalid image tag: $image_tag" >&2
+              exit 2
+            }
+            tags+=("$image:$image_tag")
+            if [[ "${INPUT_PUSH_LATEST:-true}" == "true" && "$image_tag" != "latest" ]]; then
+              tags+=("$image:latest")
+            fi
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            tags+=("$image:$version")
+            [[ "$version" == *-* ]] || tags+=("$image:latest")
+          else
+            branch_tag="${GITHUB_REF_NAME//\//-}"
+            tags+=("$image:$branch_tag" "$image:latest")
+          fi
+
+          tags+=("$image:sha-${GITHUB_SHA::7}")
+          {
+            echo "image=$image"
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}" | awk '!seen[$0]++'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Multi-Architecture Builder
+        run: |
+          set -Eeuo pipefail
+          for attempt in 1 2 3; do
+            if docker run --privileged --rm tonistiigi/binfmt:qemu-v9.2.2 --install arm64; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "QEMU setup failed after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+
+          docker buildx create --name yyb-builder --driver docker-container --use
+          for attempt in 1 2 3; do
+            if docker buildx inspect --bootstrap; then
+              exit 0
+            fi
+            [[ "$attempt" == 3 ]] && exit 1
+            sleep $((attempt * 10))
+          done
+
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in 1 2 3; do
+            if printf '%s' "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin; then
+              exit 0
+            fi
+            [[ "$attempt" == 3 ]] && exit 1
+            sleep $((attempt * 10))
+          done
+
+      - name: Build and Push Docker Image
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -Eeuo pipefail
+          mapfile -t tags <<< "$IMAGE_TAGS"
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            [[ -n "$tag" ]] && tag_args+=(--tag "$tag")
+          done
+
+          for attempt in 1 2 3; do
+            if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+              build_version="${GITHUB_REF_NAME#v}"
+            else
+              build_version="$(tr -d '[:space:]' < VERSION)"
+            fi
+            if docker buildx build \
+              --file ./Dockerfile \
+              --build-arg VERSION="$build_version" \
+              --build-arg COMMIT="$GITHUB_SHA" \
+              --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --platform linux/amd64,linux/arm64 \
+              --push \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              "${tag_args[@]}" \
+              .; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "Docker build failed after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done

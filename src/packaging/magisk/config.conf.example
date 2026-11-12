@@ -1,0 +1,51 @@
+# wxcode-YYB Magisk runtime configuration.
+# Quote values that contain spaces, &, #, or other shell characters.
+
+HOST=127.0.0.1
+PORT=8000
+KEEPALIVE_INTERVAL=2m
+KEEPALIVE_AHEAD=4m
+# AS refresh: legacy_auth (default); source restores source-based routing.
+# Previous defaults have delayed failures; long-term keepalive is unverified.
+YYB_APPSTORE_REFRESH_MODE=legacy_auth
+# Device identity: stable (default) keeps one device per account; random
+# restores a new random device on every login and request.
+YYB_DEVICE_IDENTITY=stable
+# Offline notices: serverchan, pushplus or qywx; empty disables. Accounts with
+# a script push channel are also notified there unless set to false.
+YYB_NOTIFY_CHANNEL=
+YYB_NOTIFY_TOKEN=
+YYB_NOTIFY_TOPIC=
+YYB_NOTIFY_ACCOUNT_PUSH=true
+# Code circuit breaker: on (default) holds off repeated upstream-rejected
+# requests per target/session locally; off restores the old behaviour.
+YYB_CIRCUIT_BREAKER=on
+TCP_PROXY=
+# TCP_PROXY is only the legacy default for accounts without a saved proxy.
+# Configure per-account static/API proxies in the Web console.
+
+# Static Android builds may not be able to use netd's loopback DNS stub.
+# Leave this default in place if logs mention [::1]:53 connection refused.
+YYB_DNS_SERVERS=223.5.5.5:53,119.29.29.29:53
+
+# Optional QingLong or daidai-panel integration. When panel scripts must call
+# this phone, set HOST=0.0.0.0 and YYB_QINGLONG_SERVER=phone-lan-ip:8000.
+# Reserve the phone address in the router; never expose port 8000 publicly.
+PANEL_TYPE=qinglong
+QL_URL=
+QL_CLIENT_ID=
+QL_CLIENT_SECRET=
+DAIDAI_URL=
+DAIDAI_APP_KEY=
+DAIDAI_APP_SECRET=
+YYB_QINGLONG_SERVER=
+YYB_QINGLONG_REPO=
+
+# Browser authentication defaults to a local SQLite database. The first
+# registered account becomes administrator when no initial password is set.
+YYB_AUTH_DRIVER=sqlite
+YYB_AUTH_DSN=
+YYB_AUTH_MYSQL_DSN=
+YYB_ADMIN_USER=admin
+YYB_ADMIN_PASSWORD=
+YYB_COOKIE_SECURE=false

@@ -262,10 +262,6 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
-	if a.auth == nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
 	if r.Method != http.MethodGet {
 		writeError(w, 405, "method not allowed")
 		return
@@ -511,7 +507,10 @@ func currentAuth(r *http.Request) (*auth.User, *auth.Session) {
 }
 func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	user, _ := currentAuth(r)
-	if user.Role != "admin" {
+	// user 为 nil 有两种情况：未携带会话，或 auth 驱动为 none（没有账号体系）。
+	// 上游修过这个空指针（旧代码直接取 user.Role 会 panic），合并时保留下游版本
+	// 会把它带回来，这里恢复上游的判空。
+	if user == nil || user.Role != "admin" {
 		writeError(w, 403, "需要管理员权限")
 		return false
 	}

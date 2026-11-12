@@ -16,3 +16,9 @@ __pycache__/
 
 # 注意：gateway/yyb-go-amd64 与 gateway/yyb-go-arm64 是 Dockerfile 依赖的
 # 预编译二进制，必须入库，不要加进忽略列表。
+
+# 运行时 SQLite 快照与头像/二维码缓存（容器数据目录，绝不入库）
+gateway/resource/db/
+src/resource/db/
+gateway/resource/data/
+src/resource/data/

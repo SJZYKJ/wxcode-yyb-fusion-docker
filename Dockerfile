@@ -1,4 +1,4 @@
-# YYB Go 融合网关（预编译二进制，多架构）
+# wxcode-YYB 融合网关（预编译二进制，多架构）
 # 构建: docker compose build
 #   或  docker build --build-arg TARGETARCH=amd64 .
 FROM alpine:3.21
@@ -8,9 +8,10 @@ ARG TARGETARCH
 # 本次发布的版本号（如 v7），由 CI 用 --build-arg VERSION=v7 传入；
 # 本地自建不传就是 dev。写入镜像内的 /static/version.json，
 # 登录页读取它显示「当前版本」，所以以后发版不用再改登录页。
-ARG VERSION=dev
+ARG VERSION=v17
 
-RUN apk add --no-cache ca-certificates wget su-exec \
+# tzdata：日志/维护窗口按本地时区显示，缺 tzdata 时容器只有 UTC。
+RUN apk add --no-cache ca-certificates wget su-exec tzdata \
     && addgroup -S yyb && adduser -S -G yyb -h /app yyb
 
 WORKDIR /app

@@ -3,217 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>登录 - YYB Go</title>
-  <link rel="stylesheet" href="/static/css/auth.css">
-  <style>
-    /* ============================================================
-       登录页（v16 视觉重构）
-       ------------------------------------------------------------
-       旧版的问题（实测：视口 654px 高、内容却 1017px）：
-         .auth-card-layout 用 place-items:center 居中，但右栏的版本更新很长，
-         把 grid 行撑到 1017px；于是 500px 高的卡片被"居中"到了 1017px 的行里，
-         落在 y=258 —— 用户打开页面看到的是一大片空白，登录框漂在下面要滚动才够得到。
-       新版的思路：
-         · 用 flex 两栏 + 各自独立滚动：左栏卡片始终相对【视口】垂直居中，
-           右栏内容再多也不会把左栏推下去；
-         · 页面本身不再整体滚动（overflow:hidden），消除"空白 + 滚动"的观感；
-         · 视觉上换成更干净的浅色体系：柔和渐变底、卡片更轻的描边与双层阴影、
-           输入框聚焦有主色光圈、按钮有细微抬升反馈、内容淡入。
-       ============================================================ */
-    body.auth-split {
-      background:
-        radial-gradient(1100px 620px at 8% -12%, #e8ebff 0%, transparent 58%),
-        radial-gradient(900px 560px at 108% 112%, #e6f2fb 0%, transparent 52%),
-        linear-gradient(180deg, #f7f8fd 0%, #f3f4fa 100%);
-      /* 登录页固定为视口高度：两栏内部各自滚动，页面不再出现整页滚动条 */
-      overflow: hidden;
-    }
-    .auth-card-layout {
-      min-height: 100vh; height: 100vh;
-      display: flex; align-items: stretch;
-      padding: 0;
-      max-width: none; margin: 0;
-    }
-    /* ---- 左栏：登录卡片，相对视口垂直居中 ---- */
-    /* 用 margin:auto 做居中，而不是容器的 align-items:center：
-       卡片比视口高时（注册页字段多就会这样），align-items:center 会把顶部溢出到
-       容器上方变成滚不到的死区；margin:auto 在有空间时居中、空间不足时自然顶对齐。 */
-    .auth-card-col {
-      flex: 1 1 auto;
-      display: flex;
-      justify-content: center;
-      padding: 32px 24px;
-      min-width: 0;
-      overflow-y: auto;
-    }
-    .auth-card { margin: auto 0; }
-    .auth-card {
-      width: min(420px, 100%);
-      background: #fff;
-      border: 1px solid #eaecf6;
-      border-radius: 22px;
-      box-shadow:
-        0 1px 2px rgba(28, 30, 70, .04),
-        0 12px 32px rgba(48, 52, 120, .08),
-        0 32px 72px rgba(48, 52, 120, .07);
-      overflow: hidden;
-      animation: cardIn .42s cubic-bezier(.22, .8, .3, 1) both;
-    }
-    @keyframes cardIn {
-      from { opacity: 0; transform: translateY(14px) scale(.985); }
-      to   { opacity: 1; transform: none; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .auth-card { animation: none; }
-    }
-    .auth-card-brand { display: flex; align-items: center; gap: 13px; padding: 30px 34px 0; }
-    .auth-card-brand .brand-mark {
-      width: 44px; height: 44px; border-radius: 13px;
-      display: grid; place-items: center;
-      background: linear-gradient(135deg, #6d70f0 0%, #4a3ecf 100%);
-      color: #fff; font-weight: 800; font-size: 20px;
-      box-shadow: 0 8px 20px rgba(84, 87, 214, .32);
-    }
-    .auth-card-brand .brand-name { font-size: 17px; font-weight: 760; color: #1f2136; letter-spacing: -.01em; }
-    .auth-card-brand .brand-meta { font-size: 12px; color: #8b8ea8; margin-top: 3px; }
-    .auth-card-body { padding: 26px 34px 32px; }
-    .auth-card-body h1 { margin: 0 0 7px; font-size: 25px; font-weight: 770; color: #1f2136; letter-spacing: -.02em; }
-    .auth-card-body .lead { margin: 0 0 26px; color: #70738c; font-size: 14px; line-height: 1.6; }
-    .auth-card .field { margin-bottom: 17px; }
-    .auth-card .field label { font-size: 13px; font-weight: 660; color: #3a3d57; }
-    .auth-card .input {
-      height: 48px; border-radius: 13px;
-      border: 1px solid #e3e5f2; background: #fcfcfe;
-      padding: 0 14px; font-size: 14.5px;
-      transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
-    }
-    .auth-card .input:hover { border-color: #d5d8ec; }
-    .auth-card .input:focus {
-      background: #fff; border-color: #6d70f0;
-      box-shadow: 0 0 0 4px rgba(109, 112, 240, .13);
-    }
-    .auth-card .btn.primary {
-      height: 48px; border-radius: 13px; font-size: 15px; font-weight: 700;
-      background: linear-gradient(135deg, #6366e8 0%, #4a3ecf 100%);
-      box-shadow: 0 6px 18px rgba(84, 87, 214, .28);
-      transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
-    }
-    .auth-card .btn.primary:hover { filter: brightness(1.06); box-shadow: 0 9px 24px rgba(84, 87, 214, .34); }
-    .auth-card .btn.primary:active { transform: translateY(1px); }
-    .auth-card .btn.primary:disabled { filter: grayscale(.35) opacity(.75); box-shadow: none; cursor: default; }
-    .auth-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 22px; padding-top: 18px; border-top: 1px solid #f0f1f8; }
-    .auth-card-foot a { color: #5457d6; font-weight: 660; text-decoration: none; }
-    .auth-card-foot a:hover { text-decoration: underline; }
-    /* 页脚 meta 行：显式给 gap，避免依赖 auth.css 的层叠顺序导致「v16·个人主页」黏在一起 */
-    .auth-card .auth-meta {
-      margin-top: 0; border-top: 0; padding-top: 0;
-      display: flex; align-items: center; gap: 8px;
-      color: #8b8ea8; font-size: 12px;
-    }
-    .auth-card .auth-meta b { color: #1f2136; font-weight: 700; }
-    .auth-card .auth-meta .meta-sep { color: #c9cce0; }
-    .auth-card .auth-meta a { color: #8b8ea8; text-decoration: none; border-bottom: 1px dashed transparent; transition: color .15s ease, border-color .15s ease; }
-    .auth-card .auth-meta a:hover { color: #5457d6; border-bottom-color: #b9bce6; }
-    .auth-card .form-error { margin: 0 0 14px; font-size: 13px; color: #c0392b; }
-    /* 密码可见性切换：加大点击热区，悬停有明显的状态反馈 */
-    .auth-card .password-wrap { position: relative; }
-    .auth-card .password-wrap .input { padding-right: 48px; }
-    .auth-card .reveal {
-      position: absolute; right: 5px; top: 5px;
-      width: 38px; height: 38px; border: 0; border-radius: 10px;
-      background: transparent; color: #9a9db5; cursor: pointer;
-      display: grid; place-items: center; font-size: 15px;
-      transition: color .15s ease, background .15s ease;
-    }
-    .auth-card .reveal:hover { color: #5457d6; background: #f2f3fd; }
-    .auth-card .reveal:focus-visible { outline: 2px solid #6d70f0; outline-offset: 1px; }
-
-    /* ---- 右栏：产品说明 + 版本更新，独立滚动 ---- */
-    .auth-feature-strip { display: none; }
-    .auth-info-col {
-      display: none;
-      flex: 0 1 560px;
-      overflow-y: auto;
-      padding: 56px 56px 56px 40px;
-      color: #1f2136;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(120, 124, 170, .28) transparent;
-    }
-    .auth-info-col::-webkit-scrollbar { width: 8px; }
-    .auth-info-col::-webkit-scrollbar-thumb { background: rgba(120, 124, 170, .24); border-radius: 8px; }
-    .auth-info-inner { max-width: 460px; margin: 0 auto; }
-    .auth-info-col h2 {
-      font-size: 27px; font-weight: 770; line-height: 1.34;
-      letter-spacing: -.02em; margin: 0 0 14px; color: #1f2136;
-    }
-    .auth-info-col > .auth-info-inner > p { color: #6b6e88; line-height: 1.75; margin: 0 0 30px; font-size: 14px; }
-    .feature-grid { display: grid; gap: 16px; }
-    .feature-item { display: flex; gap: 13px; align-items: flex-start; }
-    .feature-item .fi-icon {
-      width: 36px; height: 36px; flex: 0 0 auto; border-radius: 11px;
-      display: grid; place-items: center;
-      background: linear-gradient(135deg, #eef0ff, #e6e9ff);
-      color: #5457d6; font-weight: 760; font-size: 14px;
-    }
-    .feature-item strong { display: block; font-size: 14px; margin-bottom: 3px; color: #262943; }
-    .feature-item p { margin: 0; font-size: 13px; color: #6b6e88; line-height: 1.6; }
-    /* ---- 版本更新 ---- */
-    .card-changelog { margin-top: 34px; padding-top: 26px; border-top: 1px solid #e4e6f3; }
-    .changelog-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
-    .changelog-head h3 { font-size: 14px; margin: 0; color: #1f2136; font-weight: 730; letter-spacing: .3px; }
-    .changelog-now { font-size: 12px; color: #8b8ea8; white-space: nowrap; }
-    .changelog-now b { color: #5457d6; font-weight: 750; }
-    .changelog-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 15px; }
-    .changelog-list li { display: flex; align-items: flex-start; gap: 12px; }
-    .changelog-tag {
-      flex: 0 0 auto; min-width: 36px; margin-top: 2px; padding: 3px 8px;
-      border-radius: 999px; background: #eef0ff; color: #5457d6;
-      font-size: 11px; font-weight: 750; text-align: center; letter-spacing: .2px;
-    }
-    .changelog-list li:first-child .changelog-tag {
-      background: linear-gradient(135deg, #6366e8, #4a3ecf); color: #fff;
-      box-shadow: 0 3px 10px rgba(84, 87, 214, .3);
-    }
-    .changelog-body b { display: block; font-size: 13px; color: #262943; margin-bottom: 4px; font-weight: 700; }
-    .changelog-body p { margin: 0; font-size: 12.5px; line-height: 1.68; color: #6b6e88; }
-
-    /* ---- 平板/窄屏：隐藏右栏，只留居中的登录卡片 ---- */
-    @media (max-width: 899px) {
-      body.auth-split { overflow: auto; }
-      .auth-card-layout { height: auto; min-height: 100vh; }
-      .auth-card-col { min-height: 100vh; }
-      .auth-info-col { display: none; }
-    }
-    /* ---- 宽屏：两栏并排 ---- */
-    @media (min-width: 900px) {
-      .auth-info-col { display: block; }
-      .auth-card-col { flex: 1 1 auto; }
-    }
-    /* 超宽屏：把整体收在一个舒适宽度内，避免两栏被拉得过散 */
-    @media (min-width: 1500px) {
-      .auth-card-layout { justify-content: center; gap: 24px; }
-      .auth-card-col { flex: 0 0 620px; }
-      .auth-info-col { flex: 0 0 560px; }
-    }
-  </style>
-</head>
+  <title>登录 - /wxcode-YYB</title>
+  <script>try{var theme=localStorage.getItem("yyb-skin");if(theme==="light"||theme==="dark")document.documentElement.dataset.theme=theme}catch(e){}</script>
+  <link rel="stylesheet" href="/static/css/auth.css?v=20261112-graphite">
+  </head>
 <body class="auth-split">
 <main class="auth-card-layout">
   <div class="auth-card-col">
   <section class="auth-card">
-    <div class="auth-card-brand"><span class="brand-mark">Y</span><div><div class="brand-name">YYB Go Enhanced</div><div class="brand-meta">微信协议与自动化控制台</div></div></div>
     <div class="auth-card-body">
       <h1>欢迎回来</h1>
       <p class="lead">使用管理员或已注册用户账号继续。</p>
       <form id="form">
         <div class="field"><label for="username">用户名</label><input class="input" id="username" autocomplete="username" required autofocus></div>
-        <div class="field"><label for="password">密码</label><div class="password-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required><button class="reveal" type="button" aria-label="显示密码" title="显示密码">👁</button></div></div>
+        <div class="field"><label for="password">密码</label><div class="password-wrap"><input class="input" id="password" type="password" autocomplete="current-password" required><button class="reveal" type="button" aria-label="显示密码" title="显示密码"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg></button></div></div>
         <div class="form-error" id="error" role="alert"></div>
         <button class="btn primary" id="submit" type="submit">登录</button>
       </form>
       <div class="auth-card-foot">
         <p class="auth-foot" id="registerLink" style="margin:0"><a href="/register">创建用户账号</a></p>
-        <p class="auth-meta"><span>版本 <b class="app-version">—</b></span><span class="meta-sep" aria-hidden="true">·</span><a href="https://zy.chun7.top" target="_blank" rel="noopener noreferrer">个人主页</a></p>
+        <p class="auth-meta"><span>版本<b class="app-version">—</b></span><span class="meta-sep" aria-hidden="true">·</span><a href="https://github.com/SJZYKJ/wxcode-yyb-fusion-docker" target="_blank" rel="noopener noreferrer">Github</a></p>
       </div>
     </div>
   </section>
@@ -221,21 +30,32 @@
 
   <aside class="auth-info-col">
     <div class="auth-info-inner">
+    <div class="auth-brand"><span class="brand-mark">Y</span><div><div class="brand-name">/wxcode-YYB</div><div class="brand-meta">微信协议与自动化控制台</div></div></div>
     <h2>账号、协议和任务，<br>都在一个受控入口中。</h2>
     <p>登录后按权限管理微信账号、面板连接与脚本运行。协议接口继续为青龙等自动化调用方独立提供。</p>
     <div class="feature-grid">
       <div class="feature-item"><span class="fi-icon">账</span><div><strong>多账号隔离</strong><p>每人只看到自己扫码添加的微信，管理员统一管理。</p></div></div>
       <div class="feature-item"><span class="fi-icon">运</span><div><strong>精确到单账号的运行</strong><p>手动运行只跑选中账号，定时按登录账号隔离。</p></div></div>
       <div class="feature-item"><span class="fi-icon">密</span><div><strong>默认安全</strong><p>取码接口 fail-closed，令牌未配置自动生成。</p></div></div>
+        <div class="feature-item"><span class="fi-icon">码</span><div><strong>多渠道取码</strong><p>应用宝、电脑管家、手游助手、雷电模拟器、QQ 浏览器任选，同一微信号多渠道取码自动合并。</p></div></div>
     </div>
     <div class="card-changelog">
       <div class="changelog-head"><h3>版本更新</h3><span class="changelog-now">当前版本 <b class="app-version">—</b></span></div>
       <ol class="changelog-list">
-        <li><span class="changelog-tag">v16</span><div class="changelog-body"><b>注册邮箱验证 + 用户批量删除</b><p>注册时必须填写邮箱并通过邮箱验证码校验，验证码 10 分钟内有效、一次性使用、同一邮箱发送带频率限制，邮箱重复注册会被拒绝；服务端未配置邮件服务时直接拒绝注册，不会静默放行。用户管理页新增复选框与「删除所选」按钮，可勾选多个成员一次性删除，删除前二次确认，并保护当前登录账号与最后一名管理员不被误删。</p></div></li>
-        <li><span class="changelog-tag">v15</span><div class="changelog-body"><b>修复青龙新建文件夹内的脚本在网关看不到的问题</b><p>青龙里新建的文件夹（脚本目录）现在能被网关照常识别，目录内的脚本会正确出现在「账号运行管理」列表中，不再出现脚本存在却列不出来的情况。</p></div></li>
-        <li><span class="changelog-tag">v14</span><div class="changelog-body"><b>控制台界面整体重构 + 管理入口修复</b><p>统一设计系统：侧栏换成图标化导航（当前页高亮指示），卡片、按钮、表格全面升级质感与微动效；登录页改为居中卡片布局。修复普通用户登录后侧栏仍显示「用户管理」入口的权限显示错误——现在该入口仅管理员可见。</p></div></li>
-        <li><span class="changelog-tag">v13</span><div class="changelog-body"><b>账号隔离真正落地 + 安卓支持下线</b><p>修复「点运行一个账号却跑了全部」的问题：手动运行严格只跑选中的那一个账号，定时脚本只跑登录账号名下的账号。安卓手机端（Xposed Hook）取码支持整体下线，只保留 Docker 部署与原生扫码协议。</p></div></li>
-        <li><span class="changelog-tag">v10</span><div class="changelog-body"><b>账号隔离分两档 + 脚本目录可见范围</b><p>「运行」只跑选中的那一个 code 账号；打开「定时」后按网关登录账号隔离，同一脚本只建一条任务。管理员可指定非管理员只能看到放行目录下的脚本。</p></div></li>
+        <li><span class="changelog-tag">v17</span><div class="changelog-body"><b>添加多个取码渠道 + 重构界面</b><p>添加腾讯电脑管家、腾讯手游助手、雷电模拟器、QQ浏览器等取码渠道，同一微信号多渠道取码可合并；重构界面。</p></div></li>
+        <li><span class="changelog-tag">v16</span><div class="changelog-body"><b>注册邮箱验证 + 用户批量删除</b></div></li>
+        <li><span class="changelog-tag">v15</span><div class="changelog-body"><b>修复青龙新建文件夹内的脚本在网关看不到的问题</b></div></li>
+        <li><span class="changelog-tag">v14</span><div class="changelog-body"><b>控制台界面整体重构 + 管理入口修复</b></div></li>
+        <li><span class="changelog-tag">v13</span><div class="changelog-body"><b>账号隔离真正落地 + 安卓支持下线</b></div></li>
+        <li><span class="changelog-tag">v10</span><div class="changelog-body"><b>账号隔离拆成两档 + 脚本目录可见范围</b></div></li>
+        <li><span class="changelog-tag">v9</span><div class="changelog-body"><b>修复「运行账号」越界，点运行只跑选中的账号</b></div></li>
+        <li><span class="changelog-tag">v8</span><div class="changelog-body"><b>脚本列表改为读青龙脚本目录里的脚本文件</b></div></li>
+        <li><span class="changelog-tag">v7.1</span><div class="changelog-body"><b>脚本列表改为直接读青龙里的全部定时任务</b></div></li>
+        <li><span class="changelog-tag">v6</span><div class="changelog-body"><b>修复横向越权：普通用户能列出全部账号</b></div></li>
+        <li><span class="changelog-tag">v5</span><div class="changelog-body"><b>安全加固：取码接口改为 fail-closed</b></div></li>
+        <li><span class="changelog-tag">v4</span><div class="changelog-body"><b>公开接口可选访问令牌 + 部署编排拆分</b></div></li>
+        <li><span class="changelog-tag">v3</span><div class="changelog-body"><b>多用户账号隔离</b></div></li>
+        <li><span class="changelog-tag">v2</span><div class="changelog-body"><b>修复数据目录权限导致的 SQLite 打不开</b></div></li>
       </ol>
     </div>
     </div>
@@ -252,7 +72,7 @@ if(new URLSearchParams(location.search).get('registration')==='disabled'){$('err
    FALLBACK_VERSION 只在 version.json 读不到/为空时兜底，避免登录页停在占位符「—」。
    ⚠️ 它是「本次发布的版本号」的兜底值，发新版本时要跟着改；如果改成写死的旧号，
    反而会把「读不到版本文件」伪装成一个看起来正常的旧版本，比显示「—」更难排查。 */
-const FALLBACK_VERSION='v16';
+const FALLBACK_VERSION='v17';
 const applyVersion=value=>{const v=(typeof value==='string'?value.trim():'')||FALLBACK_VERSION;document.querySelectorAll('.app-version').forEach(el=>{el.textContent=v})};
 applyVersion(null);
 fetch('/static/version.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(d=>applyVersion(d&&d.version)).catch(()=>{});

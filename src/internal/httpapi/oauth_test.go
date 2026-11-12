@@ -20,12 +20,12 @@ func TestPublicOAuthReturnsAuthorizationURL(t *testing.T) {
 	}
 	defer app.Close()
 	status := "alive"
-	account, err := app.db.UpsertAccount(context.Background(), "openid-oauth-test", "login-buffer", nil, nil, nil, nil, nil, &status, nil)
+	account, err := app.db.UpsertAccount(context.Background(), "openid-oauth-test", "login-buffer", nil, nil, nil, nil, nil, &status)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	body := []byte(`{"ref":"` + strconv.FormatInt(account.ID, 10) + `","appid":"wx1234567890abcdef","redirect_uri":"https://example.com/callback","scope":"snsapi_base"}`)
+	body := []byte(`{"ref":"` + strconv.FormatInt(account.ID, 10) + `","appid":"wx1234567890abcdef","redirect_uri":"https://example.com/callback","scope":"snsapi_base","return_url_only":true}`)
 	recorder := httptest.NewRecorder()
 	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/wx/oauth", bytes.NewReader(body)))
 	if recorder.Code != http.StatusOK {

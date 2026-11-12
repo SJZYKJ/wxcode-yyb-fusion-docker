@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,13 +22,18 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 
 	"yyb_go/internal/auth"
+	"yyb_go/internal/eventlog"
+	"yyb_go/internal/oauth"
+	"yyb_go/internal/pcmgr"
 	"yyb_go/internal/protocol"
+	"yyb_go/internal/proxysource"
 	"yyb_go/internal/qr"
 	"yyb_go/internal/store"
 )
 
 type Config struct {
 	ResourceRoot      string
+	EmbeddedWebAssets bool
 	DBFilename        string
 	TCPProxy          string
 	SessionTTL        time.Duration
@@ -35,64 +43,141 @@ type Config struct {
 	QRSessionTTL      time.Duration
 	KeepAliveInterval time.Duration
 	KeepAliveAhead    time.Duration
+	ASRefreshMode     string
+	DeviceIdentity    string
 	QingLongType      string
 	QingLongURL       string
 	QingLongClientID  string
 	QingLongSecret    string
-	QingLongServer    string
-	AuthDriver        string
-	AuthDSN           string
-	AuthMySQLDSN      string
-	AdminUser         string
-	AdminPassword     string
-	CookieSecure      bool
-	SessionDuration   time.Duration
-	// APIToken 保护所有"无需浏览器会话即可访问"的取码接口。
-	// 启动时由 resolveAPIToken 解析（security.go），结果始终非空——
-	// 未配置 YYB_API_TOKEN 会自动生成并落库，重启后不变。
-	// 只有 AllowNoAuth 被显式打开时才可能为空。
+	// Port 是 HTTP 监听端口。面板回连地址（YYB_QINGLONG_SERVER）未显式配置时，
+	// 用它推导出 `yyb-go:<Port>`，避免默认值写死一个与实际端口不符的号码。
+	Port             int
+	QingLongServer   string
+	QingLongRepo     string
+	QingLongRefMode  string
+	AuthDriver       string
+	AuthDSN          string
+	AuthMySQLDSN     string
+	IntegrationToken string
+	// ProtocolToken protects the legacy /wx* and /wxapp/* automation routes
+	// when the service is reachable outside a trusted private network.
+	ProtocolToken   string
+	AdminUser       string
+	AdminPassword   string
+	CookieSecure    bool
+	EnablePCLogin   bool
+	SessionDuration time.Duration
+
+	// ---- 下游定制（v4~v16 引入，上游没有对应实现）----
+	//
+	// APIToken 保护 /wxapp/*、/wx/code、/instances 等无需浏览器会话的取码接口。
+	// fail-closed：为空时启动阶段一定会生成一个并落库（见 security.go）。
 	APIToken string
-	// AllowNoAuth 对应 YYB_ALLOW_NO_AUTH=true：显式关闭取码接口鉴权。
-	// 默认 false（fail-closed），开启后端口可达即可列出全部 openid 并取码。
+	// AllowNoAuth=true 才允许无令牌访问（仅限内网自用，日志里有醒目警告）。
 	AllowNoAuth bool
-	// AllowRegistration 对应 YYB_ALLOW_REGISTRATION=true：忽略数据库设置，
-	// 始终允许公开注册。默认 false——注册关闭，只有内网地址能在
-	// 「库中还没有任何账号」时完成首次管理员注册。
+	// AllowRegistration 控制公开注册；缺省关闭，只保留「内网首注册引导」。
 	AllowRegistration bool
-	// TrustProxy 对应 YYB_TRUST_PROXY=true：信任 X-Forwarded-For / X-Real-IP。
-	// 默认 false，登录限速等一律以 TCP 对端地址为准，避免伪造请求头绕过限速。
+	// TrustProxy 允许信任 X-Forwarded-For 以还原真实客户端 IP。
 	TrustProxy bool
-	// SMTP 是注册邮箱验证码的发信配置，全部来自 YYB_SMTP_* 环境变量。
-	// 零值 = 未配置：/api/auth/email-code 返回 503，注册直接拒绝并提示
-	// 「服务端未配置邮件服务，请联系管理员」——不允许静默跳过邮箱验证。
+	// SMTP 是注册邮箱验证码的发信配置（见 emailverify.go / smtp_settings.go）。
 	SMTP SMTPConfig
+
+	// NotifyChannel/Token/Topic configure the operator's offline notices.
+	// Accounts with a script push channel also notify that channel unless
+	// DisableAccountPushNotify is set.
+	NotifyChannel            string
+	NotifyToken              string
+	NotifyTopic              string
+	DisableAccountPushNotify bool
+
+	// DisableCircuitBreaker turns off the local target/session hold-off that
+	// stops repeating an upstream-rejected request.
+	DisableCircuitBreaker bool
+
+	// CodeMinGap spaces the upstream requests of one account; zero turns
+	// pacing off. CodeMaxWait is the longest a request queues for its slot
+	// before it is refused locally. tuning.json beside the database overrides
+	// both without a restart.
+	CodeMinGap  time.Duration
+	CodeMaxWait time.Duration
+
+	// LoginBudget caps the OAuth-layer calls (new login tickets, forced
+	// refreshes) that business traffic may cause per account inside
+	// LoginWindow; zero disables it. tuning.json overrides both at run time.
+	LoginBudget int
+	LoginWindow time.Duration
+
+	// FreshSessionWindow is how long after a successful code a -14 is treated as
+	// the AppID's own refusal and not repaired with a new login. Zero keeps the
+	// default (protocol.DefaultFreshSessionWindow), so a Config that does not
+	// set it behaves as before; a negative value switches the guard off.
+	// tuning.json overrides it at run time.
+	FreshSessionWindow time.Duration
+
+	// CodeDenyAppIDs adds AppIDs that code requests refuse on top of the
+	// built-in website-application AppIDs; CodeAllowAppIDs lifts a refusal and
+	// wins over both lists.
+	CodeDenyAppIDs  []string
+	CodeAllowAppIDs []string
+
+	// DisableDynamicAppIDDeny turns off the learned deny list: an AppID whose
+	// wx.login code request reaches the upstream and comes back without a code
+	// is otherwise denied for every account and remembered across restarts.
+	DisableDynamicAppIDDeny bool
+
+	// CodeDynamicDenyThreshold is how many distinct accounts must fail an
+	// AppID before it is denied (a fixed total of failures denies it too, so
+	// single-account deployments are covered); zero keeps the default of two.
+	CodeDynamicDenyThreshold int
 }
 
 type App struct {
-	cfg                Config
-	resources          resources
-	db                 *store.DB
+	events    *eventlog.Logger
+	cfg       Config
+	resources resources
+	db        *store.DB
+	// emailCode 保存注册邮箱验证码与发送限流（见 emailverify.go）。
+	// 广播模式（a.auth == nil）下不使用。
+	emailCode          *emailVerifier
 	pool               *protocol.Pool
 	qr                 *qr.Client
-	refreshLoginBuffer func(context.Context, protocol.LoginBufferCredentials) (protocol.LoginBufferResult, error)
+	refreshCredentials func(context.Context, protocol.LoginBufferCredentials) (protocol.LoginBufferCredentials, error)
+	// oauthH5Invoke lets tests stub the web-authorize call behind the
+	// /wx/oauth auto-exchange; nil means the real /wx/h5code invoke.
+	oauthH5Invoke      wxappCall
+	checkLogin         func(context.Context, protocol.LoginBufferCredentials) (protocol.LoginBufferCredentials, error)
+	fetchLoginBuffer   func(context.Context, protocol.LoginBufferCredentials) (string, error)
 	exchangeAuthCode   func(context.Context, string) (protocol.LoginBufferResult, error)
 	fetchUserInfo      func(context.Context, protocol.LoginBufferCredentials) (map[string]any, error)
+	prepareScanSession func(context.Context, *store.WechatAccount, string, bool) error
 	qinglong           *qingLongClient
 	auth               *auth.Store
+	notifier           *offlineNotifier
+	circuit            *circuitBreaker
+	appIDs             *appIDPolicy
+	dynamicAppIDs      *dynamicAppIDDeny
+	pacer              *accountPacer
 
-	hookMu        sync.Mutex
-	mu            sync.Mutex
-	qrSessions    map[string]*qr.Session
-	quickSessions map[string]quickLoginSession
-	refreshMu     sync.Mutex
-	loginMu       sync.Mutex
-	loginAttempts map[string]loginAttempt
-	// emailCode 保存注册邮箱验证码与发送限流（见 emailverify.go）。
-	// auth == nil（广播模式，无账号体系）时保持 nil。
-	emailCode *emailVerifier
+	mu                sync.Mutex
+	qrSessions        map[string]*qrLoginSession
+	quickSessions     map[string]quickLoginSession
+	refreshLocksMu    sync.Mutex
+	refreshLocks      map[int64]chan struct{}
+	loginMu           sync.Mutex
+	loginAttempts     map[string]loginAttempt
+	proxyMu           sync.Mutex
+	proxyLeases       map[int64]accountProxyLease
+	proxyLeaseLocksMu sync.Mutex
+	proxyLeaseLocks   map[int64]chan struct{}
+	keepAliveRetryMu  sync.Mutex
+	keepAliveRetryAt  map[int64]time.Time
+	panelSyncMu       sync.Mutex
+	accountLinkMu     sync.Mutex
 
-	keepAliveCancel context.CancelFunc
-	keepAliveDone   chan struct{}
+	keepAliveCancel   context.CancelFunc
+	keepAliveDone     chan struct{}
+	accountLinkCancel context.CancelFunc
+	accountLinkDone   chan struct{}
 }
 
 var swaggerDocsHandler = httpSwagger.Handler(
@@ -103,6 +188,33 @@ var swaggerDocsHandler = httpSwagger.Handler(
 )
 
 func NewApp(cfg Config) (*App, error) {
+	cfg.ASRefreshMode = strings.ToLower(strings.TrimSpace(cfg.ASRefreshMode))
+	switch cfg.ASRefreshMode {
+	case "", "legacy_auth":
+		cfg.ASRefreshMode = "legacy_auth"
+	case "source":
+	default:
+		return nil, errors.New("YYB_APPSTORE_REFRESH_MODE must be source or legacy_auth")
+	}
+	cfg.DeviceIdentity = strings.ToLower(strings.TrimSpace(cfg.DeviceIdentity))
+	switch cfg.DeviceIdentity {
+	case "", protocol.DeviceIdentityStable:
+		cfg.DeviceIdentity = protocol.DeviceIdentityStable
+	case protocol.DeviceIdentityRandom:
+	default:
+		return nil, errors.New("YYB_DEVICE_IDENTITY must be stable or random")
+	}
+	cfg.NotifyChannel = strings.ToLower(strings.TrimSpace(cfg.NotifyChannel))
+	cfg.NotifyToken = strings.TrimSpace(cfg.NotifyToken)
+	cfg.NotifyTopic = strings.TrimSpace(cfg.NotifyTopic)
+	switch {
+	case cfg.NotifyChannel == "" || cfg.NotifyChannel == "none":
+		cfg.NotifyChannel = ""
+	case !validPushChannel(cfg.NotifyChannel):
+		return nil, errors.New("YYB_NOTIFY_CHANNEL must be serverchan, pushplus or qywx")
+	case cfg.NotifyToken == "":
+		return nil, errors.New("YYB_NOTIFY_TOKEN is required when YYB_NOTIFY_CHANNEL is set")
+	}
 	if cfg.ResourceRoot == "" {
 		cfg.ResourceRoot = filepath.Join(".", "resource")
 	}
@@ -122,15 +234,22 @@ func NewApp(cfg Config) (*App, error) {
 		cfg.QRSessionTTL = 5 * time.Minute
 	}
 	if cfg.KeepAliveInterval > 0 && cfg.KeepAliveAhead <= 0 {
-		cfg.KeepAliveAhead = 45 * time.Minute
+		cfg.KeepAliveAhead = 4 * time.Minute
 	}
 	if cfg.QingLongServer == "" {
-		cfg.QingLongServer = "yyb-go:8000"
+		port := cfg.Port
+		if port <= 0 {
+			port = 8000
+		}
+		cfg.QingLongServer = fmt.Sprintf("yyb-go:%d", port)
+	}
+	if cfg.QingLongRepo == "" {
+		cfg.QingLongRepo = "SuperNaiBA_YYB-GO-Script,qinglong/scripts"
 	}
 	if cfg.SessionDuration <= 0 {
 		cfg.SessionDuration = 7 * 24 * time.Hour
 	}
-	res, err := ensureResources(cfg.ResourceRoot)
+	res, err := ensureResources(cfg.ResourceRoot, cfg.EmbeddedWebAssets)
 	if err != nil {
 		return nil, err
 	}
@@ -149,62 +268,75 @@ func NewApp(cfg Config) (*App, error) {
 		}
 		return fallback
 	}
-	cfg.QingLongType = loadSetting(qingLongTypeSetting, cfg.QingLongType)
-	cfg.QingLongURL = loadSetting(qingLongURLSetting, cfg.QingLongURL)
-	cfg.QingLongClientID = loadSetting(qingLongClientIDSetting, cfg.QingLongClientID)
-	cfg.QingLongSecret = loadSetting(qingLongSecretSetting, cfg.QingLongSecret)
-	// fail-closed：没有显式令牌时自动生成并落库，绝不让取码接口裸奔。
-	apiToken, generated := resolveAPIToken(context.Background(), db, cfg.APIToken, cfg.AllowNoAuth)
-	cfg.APIToken = apiToken
-	announceAPIToken(apiToken, generated, cfg.AllowNoAuth)
+	cfg.QingLongType = normalizePanelType(loadSetting(qingLongTypeSetting, cfg.QingLongType))
+	loadPanelSetting := func(panelType, key, fallback string) string {
+		value, settingErr := db.GetSetting(context.Background(), panelSettingKey(panelType, key))
+		if settingErr == nil {
+			return value
+		}
+		return loadSetting(key, fallback)
+	}
+	cfg.QingLongURL = loadPanelSetting(cfg.QingLongType, qingLongURLSetting, cfg.QingLongURL)
+	cfg.QingLongClientID = loadPanelSetting(cfg.QingLongType, qingLongClientIDSetting, cfg.QingLongClientID)
+	cfg.QingLongSecret = loadPanelSetting(cfg.QingLongType, qingLongSecretSetting, cfg.QingLongSecret)
+	// 下游定制：取码接口的访问令牌（fail-closed）。没有显式配置就自动生成并落库，
+	// 只有 YYB_ALLOW_NO_AUTH=true 才会得到空令牌。
+	resolvedToken, apiTokenGenerated := resolveAPIToken(context.Background(), db, cfg.APIToken, cfg.AllowNoAuth)
+	cfg.APIToken = resolvedToken
+	announceAPIToken(cfg.APIToken, apiTokenGenerated, cfg.AllowNoAuth)
+	if normalizePanelType(cfg.QingLongType) == PanelTypeArcadia {
+		cfg.QingLongClientID = "api-token"
+	}
 	poolCfg := protocol.DefaultConfig()
 	poolCfg.SessionTTL = cfg.SessionTTL
 	poolCfg.ShortlinkTimeout = cfg.RequestTimeout
-	poolCfg.TCPProxy = cfg.TCPProxy
+	poolCfg.DeviceIdentity = cfg.DeviceIdentity
+	// Zero disables the login budget, so a Config that does not set it (tests,
+	// embedders) keeps the previous behaviour; main supplies the defaults.
+	poolCfg.LoginBudget = cfg.LoginBudget
+	poolCfg.LoginWindow = cfg.LoginWindow
+	poolCfg.FreshSessionWindow = cfg.FreshSessionWindow
 	pool := protocol.NewPool(poolCfg, db)
 	qrClient := qr.NewClient(cfg.RequestTimeout)
+	// The traffic limiter's configured values; tuning.json may override them at run time.
+	trafficSettings := pacingSettings{MinGap: cfg.CodeMinGap, MaxWait: cfg.CodeMaxWait, LoginBudget: cfg.LoginBudget, LoginWindow: cfg.LoginWindow, FreshWindow: protocol.EffectiveFreshWindow(cfg.FreshSessionWindow)}
 	app := &App{
 		cfg:                cfg,
 		resources:          res,
 		db:                 db,
 		pool:               pool,
 		qr:                 qrClient,
-		refreshLoginBuffer: qrClient.RefreshLoginBuffer,
+		refreshCredentials: qrClient.LoginBuffers().RefreshCredentials,
+		checkLogin:         qrClient.LoginBuffers().CheckLogin,
+		fetchLoginBuffer:   qrClient.LoginBuffers().FetchLoginBuffer,
 		exchangeAuthCode:   qrClient.GetLoginBufferFromCode,
 		fetchUserInfo:      qrClient.LoginBuffers().FetchUserInfo,
 		qinglong:           newQingLongClient(cfg.QingLongType, cfg.QingLongURL, cfg.QingLongClientID, cfg.QingLongSecret, cfg.RequestTimeout),
-		qrSessions:         map[string]*qr.Session{},
+		notifier:           newOfflineNotifier(offlineNotifyTimeout),
+		circuit:            newCircuitBreaker(defaultCircuitConfig()),
+		appIDs:             newAppIDPolicy(cfg.CodeDenyAppIDs, cfg.CodeAllowAppIDs, db),
+		dynamicAppIDs:      newDynamicAppIDDeny(db, cfg.CodeDynamicDenyThreshold, cfg.CodeAllowAppIDs, cfg.DisableDynamicAppIDDeny),
+		pacer:              newAccountPacer(filepath.Join(res.DB, "tuning.json"), trafficSettings),
+		qrSessions:         map[string]*qrLoginSession{},
 		quickSessions:      map[string]quickLoginSession{},
 		loginAttempts:      map[string]loginAttempt{},
+		refreshLocks:       map[int64]chan struct{}{},
+		proxyLeases:        map[int64]accountProxyLease{},
+		proxyLeaseLocks:    map[int64]chan struct{}{},
+		keepAliveRetryAt:   map[int64]time.Time{},
 	}
-	// 注册邮箱验证码：只有账号模式才需要。SMTP 未配置时 send 为 nil，
-	// emailVerifier.RegisterCode 会直接拒绝发送（fail-closed，见 emailverify.go）。
-	//
-	// 这里先用环境变量建一个初始发信器；稍后 loadSMTPSettings/refreshEmailVerifier
-	// 会把它覆盖成「管理员在界面上保存的设置」——因为 settings 表要等 auth 初始化后
-	// 才能读，而 emailVerifier 现在就要构造好，避免中间出现 nil 窗口。
-	if cfg.SMTP.Configured() {
-		app.emailCode = newEmailVerifier(newSMTPSender(cfg.SMTP).SendVerificationCode)
-	} else {
-		app.emailCode = newEmailVerifier(nil)
+	// tuning.json changes the login budget and the fresh-session guard of the
+	// running pool without a restart.
+	app.pacer.onChange = func(s pacingSettings) {
+		pool.SetLoginBudget(s.LoginBudget, s.LoginWindow)
+		pool.SetFreshSessionWindow(s.FreshWindow)
 	}
-	authDriver := strings.ToLower(strings.TrimSpace(cfg.AuthDriver))
-	authDSN := strings.TrimSpace(cfg.AuthDSN)
-	if authDriver == "" && cfg.AuthMySQLDSN != "" {
-		authDriver = "mysql"
-		authDSN = cfg.AuthMySQLDSN
+	authDriver, authDSN, err := cfg.AuthDatabase()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	if authDriver != "" && authDriver != "none" {
-		if authDriver == "mysql" && authDSN == "" {
-			authDSN = cfg.AuthMySQLDSN
-		}
-		if authDriver == "sqlite" && authDSN == "" {
-			authDSN = filepath.Join(res.DB, "auth.db")
-		}
-		if authDSN == "" {
-			_ = db.Close()
-			return nil, fmt.Errorf("auth %s DSN is empty", authDriver)
-		}
 		authCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		authStore, authErr := auth.Open(authCtx, authDriver, authDSN)
@@ -219,11 +351,20 @@ func NewApp(cfg Config) (*App, error) {
 		}
 		app.auth = authStore
 	}
-	// auth 就绪后才能读 settings 表：把发信器换成「数据库里管理员保存的设置」。
-	// 必须放在 app.auth 赋值之后，否则 loadSMTPSettings 读不到库、还会被 emailCodeFor
-	// 的 auth==nil 判断挡住。这一步让「界面配好的邮件设置」在重启后依然生效。
-	app.refreshEmailVerifier(app.activeSMTPConfig())
+	app.events, err = eventlog.New(db)
+	if err != nil {
+		if app.auth != nil {
+			_ = app.auth.Close()
+		}
+		_ = db.Close()
+		return nil, err
+	}
+	pool.SetEventLogger(app.events)
+	app.events.Emit("system.started", eventlog.Fields{})
 	app.startKeepAlive()
+	app.startAccountLinkCleanup()
+	// 下游定制：注册邮箱验证码发信器（SMTP 可能来自数据库设置，故在 App 建成后再解析）。
+	app.refreshEmailVerifier(app.activeSMTPConfig())
 	return app, nil
 }
 
@@ -233,7 +374,15 @@ func (a *App) Close() error {
 		<-a.keepAliveDone
 		a.keepAliveCancel = nil
 	}
+	if a.accountLinkCancel != nil {
+		a.stopAccountLinkCleanup()
+	}
+	// Offline notices are bounded by offlineNotifyTimeout and may still read
+	// the account's push setting; finish them before closing the database.
+	a.notifier.wait()
 	if a.db != nil {
+		a.events.Emit("system.stopped", eventlog.Fields{})
+		a.events.Close()
 		if a.auth != nil {
 			_ = a.auth.Close()
 		}
@@ -248,64 +397,106 @@ func (a *App) Handler() http.Handler {
 	}
 
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(a.logRequests(), gin.Logger(), gin.Recovery())
 
-	// —— 永远开放：容器健康检查与登录页静态资源 ——
-	router.Any("/health", func(c *gin.Context) {
+	// /login 一址两用：控制台登录页/登录提交（免令牌），以及 wxcode 线格式的取码
+	// （GET ?appId=、POST {"app_id":...}，需要令牌）。分发见 fusion.go。
+	router.Any("/login", a.requireAPIToken(consoleLoginRequest), gin.WrapF(a.handleUnifiedLogin))
+	router.Any("/register", gin.WrapF(a.handleRegister))
+	router.Any("/logout", gin.WrapF(a.handleLogout))
+	healthHandler := func(c *gin.Context) {
 		writeJSON(c.Writer, http.StatusOK, gin.H{"ok": true})
+	}
+	router.Any("/health", healthHandler)
+	// Compatibility for older copies of the public account cache checker.
+	router.Any("/healthz", healthHandler)
+	router.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/static/") {
+			c.Header("Cache-Control", "no-cache")
+		}
+		c.Next()
 	})
 	router.StaticFS("/static", http.Dir(a.resources.Static))
-
-	// —— 无需浏览器会话：Web 登录 / 注册 / 登出 ——
-	router.Any("/register", gin.WrapF(a.handleRegister))
-	// 注册页没有浏览器会话，发验证码必须挂在这一组；
-	// 它自带邮箱维度的限流（60 秒 1 次 / 1 小时 5 次），见 emailverify.go。
+	// Automation stays independent from browser sessions, but every protocol
+	// route (including QR subpaths) must pass the configured token gate first.
+	protocolRoutes := router.Group("", func(c *gin.Context) {
+		if !a.authorizeProtocol(c.Writer, c.Request) {
+			c.Abort()
+			return
+		}
+		c.Next()
+	}, a.requireAPIToken())
+	// 下游定制：wxcode 线格式的账号实例列表（青龙脚本枚举账号用）。
+	protocolRoutes.Any("/instances", gin.WrapF(a.handleWXCompatInstances))
+	protocolRoutes.Any("/wx/oauth", gin.WrapF(a.handlePublicOAuth))
+	protocolRoutes.Any("/api/qbbrowser/token", gin.WrapF(a.handleQBBrowserToken))
+	protocolRoutes.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
+	protocolRoutes.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))
+	protocolRoutes.Any("/wxapp/operateWxData", gin.WrapF(a.handleOperateWXData))
+	protocolRoutes.Any("/wx/code", gin.WrapF(a.handleWXCodeAlias))
+	protocolRoutes.Any("/wx/h5code", gin.WrapF(a.handleH5Code))
+	protocolRoutes.Any("/wxapp/getH5Code", gin.WrapF(a.handleH5CodeAlias))
+	protocolRoutes.Any("/wx/getuserinfo", gin.WrapF(a.handleWXGetUserInfo))
+	protocolRoutes.Any("/wx/encryptkey", gin.WrapF(a.handleWXEncryptKey))
+	protocolRoutes.Any("/wx/getlatestuserkey", gin.WrapF(a.handleWXLatestUserKey))
+	protocolRoutes.Any("/wx/getphonenumber", gin.WrapF(a.handleWXPhoneAlias))
+	protocolRoutes.Any("/wx/cloud", gin.WrapF(a.handleWXCloud))
+	protocolRoutes.Any("/wx/qrcodeauth", gin.WrapF(a.handleQRRoot))
+	protocolRoutes.Any("/wx/qrcodeauth/*path", gin.WrapF(a.handleQR))
+	protocolRoutes.Any("/wx/mpgeta8key", gin.WrapF(a.handleWXMPGetA8Key))
+	protocolRoutes.Any("/wx/appmsgext", gin.WrapF(a.handleWXAppMsgExt))
+	protocolRoutes.Any("/wx/appmsglike", gin.WrapF(a.handleWXAppMsgLike))
+	router.Any("/openapi.json", gin.WrapF(a.handleOpenAPI))
+	router.GET("/integration/module-manifest.json", gin.WrapF(a.handleIntegrationManifest))
+	router.GET("/integration/accounts", gin.WrapF(a.handleIntegrationAccounts))
+	router.GET("/integration/accounts/proxy", gin.WrapF(a.handleIntegrationAccountProxy))
+	router.POST("/integration/actions/get-code", gin.WrapF(a.handleIntegrationGetCode))
+	router.POST("/integration/actions/refresh-account", gin.WrapF(a.handleIntegrationRefreshAccount))
+	// Bearer-style one-time account links are intentionally public. The token
+	// itself is a random secret; all management and link creation APIs remain
+	// behind the browser session middleware below.
+	// 注册邮箱验证码：注册页没有会话，必须挂在公开路由上（下游定制）。
 	router.Any("/api/auth/email-code", gin.WrapF(a.handleEmailCode))
-	router.Any("/logout", gin.WrapF(a.handleLogout))
+	router.Any("/account-link/:token", gin.WrapF(a.handleAccountLinkPage))
+	router.Any("/account-link/:token/*path", gin.WrapF(a.handleAccountLink))
 
-	// —— 公开取码接口：受 YYB_API_TOKEN 保护 ——
-	// 令牌由启动时解析（显式配置 / 数据库自动生成），永远是非空的 fail-closed；
-	// 只有显式设置 YYB_ALLOW_NO_AUTH=true 才会真的开放。
-	// 现有自动化客户端（青龙脚本）不需要浏览器会话，但要带上令牌；
-	// 工作台「调用配置」在浏览器里带会话调用，因此同样放行。
-	//
-	// /login 一址两用，单独注册：GET /login?appId= 与 POST {"app_id":..} 取码，
-	// 需要令牌；而 POST {"username":..} 是控制台登录、GET /login 是登录页，
-	// 必须放行，否则配了令牌后浏览器无法登录。
-	router.Any("/login", a.requireAPIToken(consoleLoginRequest), gin.WrapF(a.handleUnifiedLogin))
-
-	api := router.Group("/", a.requireAPIToken())
-	// wxcode 兼容取码接口：脚本与自动化客户端按原线格式访问融合网关。
-	api.Any("/instances", gin.WrapF(a.handleWXCompatInstances))
-	api.Any("/wx/oauth", gin.WrapF(a.handlePublicOAuth))
-	api.Any("/wxapp/getCode", gin.WrapF(a.handleGetCode))
-	api.Any("/wxapp/getPhoneNumber", gin.WrapF(a.handleGetPhoneNumber))
-	api.Any("/wxapp/operateWxData", gin.WrapF(a.handleOperateWXData))
-	api.Any("/wx/code", gin.WrapF(a.handleWXCodeAlias))
-	api.Any("/wx/getuserinfo", gin.WrapF(a.handleWXGetUserInfo))
-	api.Any("/wx/encryptkey", gin.WrapF(a.handleWXEncryptKey))
-	api.Any("/wx/getphonenumber", gin.WrapF(a.handleWXPhoneAlias))
-	api.Any("/wx/cloud", gin.WrapF(a.handleWXCloud))
-	api.Any("/wx/qrcodeauth", gin.WrapF(a.handleQRRoot))
-	api.Any("/wx/qrcodeauth/*path", gin.WrapF(a.handleQR))
-	api.Any("/wx/mpgeta8key", gin.WrapF(a.handleWXMPGetA8Key))
-	api.Any("/wx/appmsgext", gin.WrapF(a.handleWXAppMsgExt))
-	api.Any("/wx/appmsglike", gin.WrapF(a.handleWXAppMsgLike))
-	api.Any("/openapi.json", gin.WrapF(a.handleOpenAPI))
-
-	// ---- 以下需要浏览器会话 ----
 	router.Use(a.requireBrowserSession())
-
-	// —— 所有已登录用户可用 ——
-	// 普通用户同样能进工作台、扫码添加账号、跑运行管理，但只能看到/操作
-	// 归属自己（wechat_accounts.owner_user_id = 自己）的账号；管理员看全部。
+	// 下面这组是「仅管理员」路由（下游定制）：用户管理、注册开关、SMTP 设置、
+	// 面板服务器级配置、脚本目录可见范围。上游把管理员判定放在各 handler 内部，
+	// 下游原本靠 requireAdminSession 中间件统一挡住；合并后必须显式恢复这个分组，
+	// 否则普通用户能读到 SMTP 密码设置和全局白名单。
+	adminRoutes := router.Group("", a.requireAdminSession())
 	router.Any("/settings", gin.WrapF(a.handleSettingsPage))
+	adminRoutes.Any("/users", gin.WrapF(a.handleUsersPage))
 	router.Any("/api/auth/me", gin.WrapF(a.handleAuthMe))
+	router.GET("/api/version", gin.WrapF(a.handleVersion))
+	router.GET("/logs", gin.WrapF(a.handleSystemLogsPage))
+	router.GET("/api/system-logs", gin.WrapF(a.handleSystemLogs))
 	router.Any("/api/auth/profile", gin.WrapF(a.handleProfile))
+	router.Any("/api/scan-settings", gin.WrapF(a.handleScanSettings))
+	router.Any("/api/circuit-settings", gin.WrapF(a.handleCircuitSettings))
+	router.Any("/accounts/circuit-settings", gin.WrapF(a.handleCircuitSettings))
+	router.Any("/api/scan-channels", gin.WrapF(a.handleScanChannels))
+	router.Any("/api/appid-deny", gin.WrapF(a.handleAppIDDeny))
+	router.Any("/api/fleet", gin.WrapF(a.handleFleetAPI))
+	router.Any("/api/fleet/bind-many", gin.WrapF(a.handleFleetBindMany))
+	router.Any("/api/fleet/dissolve", gin.WrapF(a.handleFleetDissolve))
+	router.Any("/api/runtime-settings", gin.WrapF(a.handleRuntimeSettings))
 	router.Any("/api/auth/password", gin.WrapF(a.handlePassword))
 	router.Any("/api/auth/sessions", gin.WrapF(a.handleSessions))
+	adminRoutes.Any("/api/auth/users", gin.WrapF(a.handleUsers))
+	adminRoutes.Any("/api/auth/users/*path", gin.WrapF(a.handleUserAction))
+	adminRoutes.Any("/api/auth/registration", gin.WrapF(a.handleRegistrationSetting))
+	// 下游定制：SMTP 设置（注册邮箱验证码）、账号脚本可读开关、青龙脚本目录可见范围。
+	adminRoutes.Any("/api/auth/smtp", gin.WrapF(a.handleSMTPSettings))
+	router.Any("/accounts/share", gin.WrapF(a.handleAccountShare))
+	adminRoutes.Any("/api/qinglong/script-visibility", gin.WrapF(a.handleScriptVisibility))
+	router.Any("/api/account-links", gin.WrapF(a.handleAccountLinksAPI))
+	router.Any("/api/account-links/*path", gin.WrapF(a.handleAccountLinksAPI))
+	router.Any("/account-links", gin.WrapF(a.handleAccountLinksPage))
 	router.Any("/", gin.WrapF(a.handleIndex))
 	router.Any("/scan", gin.WrapF(a.handleScan))
+	router.Any("/proxies", gin.WrapF(a.handleProxiesPage))
 	router.Any("/runs", gin.WrapF(a.handleRuns))
 	router.Any("/docs", func(c *gin.Context) {
 		c.Redirect(http.StatusMovedPermanently, "/docs/index.html")
@@ -316,13 +507,23 @@ func (a *App) Handler() http.Handler {
 	router.Any("/quick-login", gin.WrapF(a.handleQuickLoginRoot))
 	router.Any("/quick-login/*path", gin.WrapF(a.handleQuickLogin))
 	router.Any("/accounts", gin.WrapF(a.handleAccountsRoot))
+	router.Any("/accounts/repair", gin.WrapF(a.handleAccountRepair))
+	router.Any("/accounts/compact", gin.WrapF(a.handleAccountCompact))
+	router.Any("/accounts/merge", gin.WrapF(a.handleAccountMerge))
 	router.Any("/accounts/avatar", gin.WrapF(a.handleAccountAvatar))
 	router.Any("/accounts/refresh", gin.WrapF(a.handleAccountRefresh))
 	router.Any("/accounts/resync", gin.WrapF(a.handleAccountResync))
 	router.Any("/accounts/remark", gin.WrapF(a.handleAccountRemark))
-	router.Any("/accounts/share", gin.WrapF(a.handleAccountShare))
+	router.Any("/accounts/status", gin.WrapF(a.handleAccountStatus))
+	router.Any("/accounts/proxy", gin.WrapF(a.handleAccountProxy))
+	router.Any("/accounts/proxy/test", gin.WrapF(a.handleAccountProxyTest))
+	router.Any("/api/proxy-profiles", gin.WrapF(a.handleProxyProfiles))
+	router.Any("/api/proxy-profiles/*path", gin.WrapF(a.handleProxyProfiles))
+	router.Any("/api/proxy-location/recommend", gin.WrapF(a.handleProxyLocationRecommend))
 	router.Any("/api/qinglong/status", gin.WrapF(a.handleQingLongStatus))
+	adminRoutes.Any("/api/qinglong/config", gin.WrapF(a.handleQingLongConfig))
 	router.Any("/api/qinglong/sync", gin.WrapF(a.handleQingLongSync))
+	router.Any("/api/qinglong/sync-all", gin.WrapF(a.handleQingLongSyncAll))
 	router.Any("/api/qinglong/jobs", gin.WrapF(a.handleQingLongJobs))
 	router.Any("/api/qinglong/jobs/enable", gin.WrapF(a.handleQingLongJobEnable))
 	router.Any("/api/qinglong/jobs/run", gin.WrapF(a.handleQingLongJobRun))
@@ -330,24 +531,6 @@ func (a *App) Handler() http.Handler {
 	router.Any("/api/qinglong/runs", gin.WrapF(a.handleQingLongRuns))
 	router.Any("/api/qinglong/runs/log", gin.WrapF(a.handleQingLongRunLog))
 	router.Any("/api/qinglong/push", gin.WrapF(a.handleQingLongPush))
-
-	// —— 仅管理员：用户管理、注册开关、面板服务器级配置 ——
-	router.Use(a.requireAdminSession())
-	router.Any("/users", gin.WrapF(a.handleUsersPage))
-	router.Any("/api/auth/users", gin.WrapF(a.handleUsers))
-	// 注意：批量删除 /api/auth/users/batch-delete 不能在这里单独 Any 注册。
-	// gin 的 radix 树不允许同一路径段上「静态子节点」与 catch-all "*path" 并存，
-	// 注册即 panic（catch-all wildcard '*path' ... conflicts with existing path
-	// segment）。因此批量删除在 handleUserAction 里按路径分派；它仍然位于
-	// requireAdminSession 之后，非管理员照旧在中间件层被 403 挡掉。
-	router.Any("/api/auth/users/*path", gin.WrapF(a.handleUserAction))
-	router.Any("/api/auth/registration", gin.WrapF(a.handleRegistrationSetting))
-	// 邮件（SMTP）设置：管理员在「用户管理」页自助配置注册验证码的发信参数。
-	// 挂在 requireAdminSession 之后 —— 里面含 SMTP 密码，绝不能对普通用户开放。
-	router.Any("/api/auth/smtp", gin.WrapF(a.handleSMTPSettings))
-	router.Any("/api/qinglong/config", gin.WrapF(a.handleQingLongConfig))
-	// 非管理员能看到的脚本目录（全局一份白名单；留空 = 不限制）
-	router.Any("/api/qinglong/script-visibility", gin.WrapF(a.handleScriptVisibility))
 	// Keep the shorter /wx/* names used by existing YYB clients. The handlers
 	// share the same session and retry logic as the canonical /wxapp/* routes.
 	router.NoRoute(func(c *gin.Context) {
@@ -355,6 +538,14 @@ func (a *App) Handler() http.Handler {
 	})
 
 	return router
+}
+
+func (a *App) handleAccountLinksPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	serveFileOrText(w, r, filepath.Join(a.resources.Templates, "account-links.html"), fallbackAccountLinksHTML)
 }
 
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -374,7 +565,25 @@ func (a *App) handleScan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	serveFileOrText(w, r, filepath.Join(a.resources.Templates, "scan.html"), fallbackScanHTML)
+	path := filepath.Join(a.resources.Templates, "scan.html")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		serveFileOrText(w, r, path, fallbackScanHTML)
+		return
+	}
+	// Desktop-WeChat authorization is experimental and remains opt-in.
+	html := strings.ReplaceAll(string(data), "__YYB_PC_LOGIN_ENABLED__", fmt.Sprintf("%t", a.cfg.EnablePCLogin))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(html))
+}
+
+func (a *App) handleProxiesPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	serveFileOrText(w, r, filepath.Join(a.resources.Templates, "proxies.html"), fallbackProxiesHTML)
 }
 
 func (a *App) handleDocs(w http.ResponseWriter, r *http.Request) {
@@ -407,21 +616,47 @@ func (a *App) handleQRRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.pruneQR()
+	var body accountProxyIn
+	if err := decodeOptionalJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	product, err := a.scanProduct(r, body.Product)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.RequestTimeout+35*time.Second)
 	defer cancel()
-	img, err := a.qr.GetQRCodeImage(ctx)
+	normalizedBody, proxySpec, err := a.normalizeAccountProxyInput(ctx, body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	client, resolvedProxy, err := a.qrClientForSpec(ctx, proxySpec)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	img, err := client.GetQRCodeImageForProduct(ctx, product)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	a.mu.Lock()
-	a.qrSessions[img.Session.ID] = img.Session
+	a.qrSessions[img.Session.ID] = &qrLoginSession{
+		Session: img.Session, Client: client, ProxySpec: proxySpec, ProxyIn: normalizedBody,
+		ImageBytes:     append([]byte(nil), img.ImageBytes...),
+		DeferPanelSync: r.URL.Query().Get("panel_sync") == "defer",
+	}
 	keep := make(map[string]bool, len(a.qrSessions))
 	for sid := range a.qrSessions {
 		keep[sid] = true
 	}
 	a.mu.Unlock()
 	path := a.resources.qrPath(img.Session.ID)
+	// The in-memory copy above is authoritative. The file is only a cache for
+	// deployments that serve the image endpoint after a process restart.
 	_ = os.WriteFile(path, img.ImageBytes, 0o644)
 	a.cleanupQR(keep)
 	basePath := "/qr"
@@ -429,9 +664,11 @@ func (a *App) handleQRRoot(w http.ResponseWriter, r *http.Request) {
 		basePath = "/wx/qrcodeauth"
 	}
 	out := map[string]any{
+		"product":    product,
 		"session_id": img.Session.ID,
 		"status":     img.Session.Status,
 		"image_url":  basePath + "/" + img.Session.ID + "/image",
+		"proxy":      proxysource.Mask(resolvedProxy),
 	}
 	if r.URL.Query().Get("as_base64") == "true" {
 		out["image_base64"] = qr.DataURIJPEG(img.ImageBytes)
@@ -458,24 +695,30 @@ func (a *App) handleQR(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		path := a.resources.qrPath(sessionID)
-		if _, err := os.Stat(path); err != nil {
-			writeError(w, http.StatusNotFound, "qr session not found")
+		if login := a.getQRSession(sessionID); login != nil && len(login.ImageBytes) > 0 {
+			w.Header().Set("Content-Type", http.DetectContentType(login.ImageBytes))
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(login.ImageBytes)
 			return
 		}
-		w.Header().Set("Content-Type", "image/jpeg")
+		path := a.resources.qrPath(sessionID)
+		if _, err := os.Stat(path); err != nil {
+			writeError(w, http.StatusNotFound, "qr image not found; the QR session may have expired")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
 		http.ServeFile(w, r, path)
 	case "poll":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		sess := a.getQRSession(sessionID)
-		if sess == nil {
+		login := a.getQRSession(sessionID)
+		if login == nil {
 			writeError(w, http.StatusNotFound, "qr session not found")
 			return
 		}
-		result, err := a.qr.PollQRCode(r.Context(), sess)
+		result, err := login.Client.PollQRCode(r.Context(), login.Session)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -484,31 +727,89 @@ func (a *App) handleQR(w http.ResponseWriter, r *http.Request) {
 			a.dropQRSession(sessionID)
 		}
 		writeJSON(w, http.StatusOK, result)
+	case "cancel":
+		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		// Refreshing the QR code must retire the previous session. It never
+		// touched the account database, but dropping it prevents a delayed poll
+		// or confirm request from completing an old scan unexpectedly.
+		a.dropQRSession(sessionID)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "cancelled", "session_id": sessionID})
 	case "confirm":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		sess := a.getQRSession(sessionID)
-		if sess == nil {
+		login := a.getQRSession(sessionID)
+		if login == nil {
 			writeError(w, http.StatusNotFound, "qr session not found")
 			return
 		}
-		result, err := a.qr.GetLoginBuffer(r.Context(), sess)
+		result, err := a.getLoginBufferWithRetry(r.Context(), login)
 		if err != nil {
 			writeError(w, http.StatusConflict, "buffer not ready: "+err.Error())
 			return
 		}
+		// A refresh/cancel may have removed this session while the OAuth
+		// exchange was in flight. Serialize the final write with cancellation
+		// so an old QR request cannot create an account after it was retired.
+		login.mu.Lock()
+		dropAfterConfirm := false
+		defer func() {
+			login.mu.Unlock()
+			if dropAfterConfirm {
+				a.dropQRSession(sessionID)
+			}
+		}()
+		if login.cancelled {
+			writeError(w, http.StatusConflict, "qr session cancelled")
+			return
+		}
 		var userInfo map[string]any
-		if ui, err := a.fetchUserInfo(r.Context(), result.Credentials); err == nil {
+		if ui, err := login.Client.LoginBuffers().FetchUserInfo(r.Context(), result.Credentials); err == nil {
 			userInfo = ui
 		}
-		acc, err := a.storeFromScan(r.Context(), r, result.LoginBuffer, result.Credentials, userInfo)
+		existed, err := a.accountExistsBeforeScan(r.Context(), result.Credentials.OpenID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		a.dropQRSession(sessionID)
+		if err := a.ensureScannedAccountAllowed(r, result.Credentials.OpenID); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		acc, err := a.storeFromScan(r.Context(), result.LoginBuffer, result.Credentials, userInfo)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := a.claimScannedAccount(r, acc.ID); err != nil {
+			if !existed {
+				_ = a.db.DeleteAccount(r.Context(), acc.ID)
+			}
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if err := a.saveNewAccountProxy(r.Context(), acc.ID, existed, login.ProxyIn, login.ProxySpec); err != nil {
+			if !existed {
+				// Do not leave a phantom account when the optional proxy save fails.
+				_ = a.db.DeleteAccount(r.Context(), acc.ID)
+			}
+			writeError(w, http.StatusInternalServerError, "保存账号代理失败: "+err.Error())
+			return
+		}
+		dropAfterConfirm = true
+		if err := a.activateScannedAccount(r.Context(), acc); err != nil {
+			writeProtocolCallError(w, err)
+			return
+		}
+		if login.DeferPanelSync {
+			a.autoSyncAfterScanLater(acc, deferredPanelSyncDelay)
+		} else {
+			a.autoSyncAfterScan(acc)
+		}
 		writeJSON(w, http.StatusOK, acc.Public())
 	default:
 		writeError(w, http.StatusNotFound, "qr session not found")
@@ -522,9 +823,13 @@ func (a *App) handleAccountsRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		accounts, err := a.listVisibleAccounts(r)
+		accounts, err := a.visibleAccounts(r)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		accounts, ok := accountListForRequest(w, r, accounts)
+		if !ok {
 			return
 		}
 		out := make([]store.AccountPublic, 0, len(accounts))
@@ -546,6 +851,8 @@ func (a *App) handleAccountsRoot(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		a.invalidateProxyLease(acc.ID)
+		a.clearKeepAliveRetry(acc.ID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"deleted": acc.ID, "openid": acc.OpenID,
 			"qinglong_cleanup": cleanup.Status, "env_entries_removed": cleanup.EnvEntriesRemoved,
@@ -594,8 +901,8 @@ func (a *App) handleAccountRefresh(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	status := a.refreshLiveness(r.Context(), acc)
-	writeJSON(w, http.StatusOK, refreshOut(acc, status))
+	status, refreshErr := a.refreshLiveness(r.Context(), acc)
+	writeJSON(w, http.StatusOK, refreshOut(acc, status, refreshErr))
 }
 
 func (a *App) handleAccountResync(w http.ResponseWriter, r *http.Request) {
@@ -629,84 +936,86 @@ func (a *App) handleAccountResync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleGetCode(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/wxapp/getCode" && r.URL.Path != "/wx/code" {
-		writeError(w, http.StatusNotFound, "not found")
+	if !acceptWXAppRoute(w, r, "/wxapp/getCode") {
 		return
 	}
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var body wxappRequest
-	if err := decodeOptionalJSON(r, &body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-	body.AppID = strings.TrimSpace(body.AppID)
-	body.Ref = strings.TrimSpace(body.Ref)
-	if body.AppID == "" {
-		writeError(w, http.StatusBadRequest, "app_id is required")
-		return
-	}
-	// v11 起只有原生扫码（login_buffer）协议：带 ref 指定账号，不带 ref 取默认账号。
-	nat, oid, err := a.nativeCodeWithRef(r, body.Ref, body.AppID)
-	if err != nil {
-		writeNativeCallError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"openid": oid, "source": "native", "fallback": false, "result": nat,
-	})
+	a.callWXApp(w, withWXOperation(r, eventlog.OpGetCode), false, a.invokeGetCode)
 }
 
 func (a *App) handleWXCodeAlias(w http.ResponseWriter, r *http.Request) {
-	a.handleGetCode(w, r)
+	if !acceptWXAppRoute(w, r, "/wx/code") {
+		return
+	}
+	a.callWXApp(w, withWXOperation(r, eventlog.OpGetCode), false, a.invokeGetCode)
 }
 
-// writeNativeCallError preserves the original error semantics of the native
-// login_buffer path for /wxapp/getCode callers.
-func writeNativeCallError(w http.ResponseWriter, err error) {
-	var expired accountExpiredError
-	var denied accountAccessDeniedError
-	switch {
-	case errors.As(err, &denied):
-		if strings.Contains(denied.msg, "not found") {
-			writeError(w, http.StatusNotFound, denied.msg)
-		} else {
-			writeError(w, http.StatusForbidden, denied.msg)
-		}
-	case errors.Is(err, sql.ErrNoRows):
-		writeError(w, http.StatusNotFound, "account not found")
-	case errors.As(err, &expired):
-		writeError(w, http.StatusConflict, "account login_buffer expired (refresh failed); re-scan required")
-	default:
-		writeError(w, http.StatusBadGateway, "call failed: "+err.Error())
+// handleH5Code serves POST /wx/h5code: an official-account web OAuth code
+// fetched over the account's own YYB session, for scripts that need the code a
+// WeChat authorization page appends to their redirect_uri. A wx.login code
+// request with these AppIDs returns nothing and costs the account its
+// authorization, so H5 scripts must use this route instead.
+func (a *App) handleH5Code(w http.ResponseWriter, r *http.Request) {
+	if !acceptWXAppRoute(w, r, "/wx/h5code") {
+		return
 	}
+	a.callWXApp(w, withWXOperation(r, eventlog.OpH5Code), false, a.invokeH5Code)
+}
+
+func (a *App) handleH5CodeAlias(w http.ResponseWriter, r *http.Request) {
+	if !acceptWXAppRoute(w, r, "/wxapp/getH5Code") {
+		return
+	}
+	a.callWXApp(w, withWXOperation(r, eventlog.OpH5Code), false, a.invokeH5Code)
+}
+
+// Empty codes can be account-wide failures. Count distinct primary groups,
+// never several channel identities of one WeChat as independent evidence.
+// Learning only creates a temporary hold; an explicit allowance always wins.
+func (a *App) learnDeniedAppID(acc *store.WechatAccount, appID string, callErr error) {
+	if !errors.Is(callErr, protocol.ErrLoginCodeUnavailable) || a.appIDs.isAllowed(appID) {
+		return
+	}
+	groupID := acc.ID
+	if primary := fleetPrimaryOf(acc); primary > 0 {
+		groupID = primary
+	}
+	denied := a.dynamicAppIDs.recordStrike(appID, groupID)
+	if !denied {
+		return
+	}
+	log.Printf("protocol: app id=%s temporarily deferred after repeated empty codes (account id=%d); next normal request may recheck after cooldown", appID, acc.ID)
+	a.events.Emit("protocol.appid_dynamic_denied", eventlog.ForAccount(acc).WithTarget(appID, eventlog.OpGetCode, ""))
 }
 
 func (a *App) handleGetPhoneNumber(w http.ResponseWriter, r *http.Request) {
 	if !acceptWXAppRoute(w, r, "/wxapp/getPhoneNumber") {
 		return
 	}
-	a.callWXApp(w, r, false, a.invokeGetPhoneNumber)
+	a.callWXApp(w, withWXOperation(r, eventlog.OpGetPhoneNumber), false, a.invokeGetPhoneNumber)
 }
 
 func (a *App) handleWXPhoneAlias(w http.ResponseWriter, r *http.Request) {
 	if !acceptWXAppRoute(w, r, "/wx/getphonenumber") {
 		return
 	}
-	a.callWXApp(w, r, false, a.invokeGetPhoneNumber)
+	a.callWXApp(w, withWXOperation(r, eventlog.OpGetPhoneNumber), false, a.invokeGetPhoneNumber)
 }
 
 func (a *App) handleOperateWXData(w http.ResponseWriter, r *http.Request) {
 	if !acceptWXAppRoute(w, r, "/wxapp/operateWxData") {
 		return
 	}
-	a.callWXApp(w, r, true, a.invokeOperateWXData)
+	a.callWXApp(w, withWXOperation(r, eventlog.OpOperateWXData), true, a.invokeOperateWXData)
 }
 
 func (a *App) handleWXEncryptKey(w http.ResponseWriter, r *http.Request) {
-	a.handleNamedWXOperation(w, r, "/wx/encryptkey", "getUserEncryptKey", false)
+	a.handleNamedWXOperation(w, r, "/wx/encryptkey", encryptKeyOperation, true)
+}
+
+// handleWXLatestUserKey exposes the client-side getLatestUserKey name while
+// forwarding the corresponding operateWxData encryption-key operation.
+func (a *App) handleWXLatestUserKey(w http.ResponseWriter, r *http.Request) {
+	a.handleNamedWXOperation(w, r, "/wx/getlatestuserkey", encryptKeyOperation, true)
 }
 
 func (a *App) handleWXCloud(w http.ResponseWriter, r *http.Request) {
@@ -737,14 +1046,6 @@ func (a *App) handleNamedWXOperation(w http.ResponseWriter, r *http.Request, pat
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if body.AppID == "" {
-		writeError(w, http.StatusBadRequest, "app_id is required")
-		return
-	}
-	acc, ok := a.resolveAPIAccountRef(w, r, body.Ref)
-	if !ok {
-		return
-	}
 	if body.Payload == nil {
 		if requirePayload {
 			writeError(w, http.StatusBadRequest, "payload is required for "+apiName)
@@ -752,7 +1053,7 @@ func (a *App) handleNamedWXOperation(w http.ResponseWriter, r *http.Request, pat
 		}
 		body.Payload = map[string]any{"api_name": apiName, "data": map[string]any{}, "env": 1}
 	}
-	result, err := a.invokeNamedWXOperation(r.Context(), acc, body, apiName)
+	result, err := a.invokeNamedWXOperation(r.Context(), body, apiName)
 	if err != nil {
 		var expired accountExpiredError
 		switch {
@@ -760,27 +1061,76 @@ func (a *App) handleNamedWXOperation(w http.ResponseWriter, r *http.Request, pat
 			writeError(w, http.StatusNotFound, "account not found: "+body.Ref)
 			return
 		case errors.As(err, &expired):
-			writeError(w, http.StatusConflict, "account login_buffer expired (refresh failed); re-scan required")
+			writeAccountExpired(w, expired)
 			return
 		case strings.Contains(err.Error(), " is required"):
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		case writeIfCircuitOpen(w, err):
+			return
 		}
-		writeError(w, http.StatusBadGateway, "call failed: "+err.Error())
+		writeProtocolCallError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (a *App) invokeNamedWXOperation(ctx context.Context, acc *store.WechatAccount, body wxappRequest, apiName string) (map[string]any, error) {
+func (a *App) invokeNamedWXOperation(ctx context.Context, body wxappRequest, apiName string) (map[string]any, error) {
+	if body.Ref == "" {
+		return nil, fmt.Errorf("ref is required")
+	}
+	if body.AppID == "" {
+		return nil, fmt.Errorf("app_id is required")
+	}
+	acc, err := a.db.ResolveAccount(ctx, strings.TrimSpace(body.Ref))
+	if err != nil {
+		return nil, err
+	}
 	if body.Payload == nil {
 		body.Payload = map[string]any{"api_name": apiName, "data": map[string]any{}, "env": 1}
 	}
-	result, err := a.invokeWXApp(ctx, acc, body.AppID, body.Payload, a.invokeOperateWXData)
+	if apiName == encryptKeyOperation {
+		body.Payload = normalizeEncryptKeyPayload(body.Payload)
+	}
+	result, err := a.invokeWithFleet(withWXOperationContext(ctx, eventlog.OpOperateWXData), acc, body.AppID, body.Payload, a.invokeOperateWXData)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]any{"openid": acc.OpenID, "result": result}, nil
+}
+
+// normalizeEncryptKeyPayload accepts the client API spelling used by
+// wx.getUserCryptoManager().getLatestUserKey(). The operateWxData operation is
+// named webapi_getuserencryptkey; only the operation name is adapted and all
+// business data is preserved unchanged.
+func normalizeEncryptKeyPayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	out := make(map[string]any, len(payload))
+	for key, value := range payload {
+		out[key] = value
+	}
+	if name, ok := out["api_name"].(string); ok && isEncryptKeyOperationAlias(name) {
+		out["api_name"] = encryptKeyOperation
+	}
+	if nested, ok := out["data"].(map[string]any); ok {
+		copyNested := make(map[string]any, len(nested))
+		for key, value := range nested {
+			copyNested[key] = value
+		}
+		if name, ok := copyNested["api_name"].(string); ok && isEncryptKeyOperationAlias(name) {
+			copyNested["api_name"] = encryptKeyOperation
+		}
+		out["data"] = copyNested
+	}
+	return out
+}
+
+const encryptKeyOperation = "webapi_getuserencryptkey"
+
+func isEncryptKeyOperationAlias(name string) bool {
+	return name == "getLatestUserKey" || name == "getUserEncryptKey"
 }
 
 func (a *App) handleWXGetUserInfo(w http.ResponseWriter, r *http.Request) {
@@ -801,7 +1151,7 @@ func (a *App) handleWXGetUserInfo(w http.ResponseWriter, r *http.Request) {
 	} else {
 		body.Ref = r.URL.Query().Get("ref")
 	}
-	acc, ok := a.resolveAPIAccountRef(w, r, body.Ref)
+	acc, ok := a.resolveAccountRef(w, r, body.Ref)
 	if !ok {
 		return
 	}
@@ -809,13 +1159,28 @@ func (a *App) handleWXGetUserInfo(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "account has no login credentials")
 		return
 	}
-	creds := protocol.CredentialsFromMap(acc.Credentials)
-	info, err := a.fetchUserInfo(r.Context(), creds)
+	if accountStatus(acc) == "expired" {
+		writeError(w, http.StatusConflict, "account login_buffer expired; re-scan required")
+		return
+	}
+	// Same gate as /wx/code: an unknown-status account past its cached expiry
+	// must not hit the upstream and turn a lapsed credential into a rejection.
+	if accountNeedsRescan(acc) {
+		writeError(w, http.StatusConflict, "account credentials expired; re-scan required")
+		return
+	}
+	proxyValue, fallbackDirect, err := a.resolveAccountProxy(r.Context(), acc.ID)
 	if err != nil {
-		if status := a.refreshLiveness(r.Context(), acc); status == "alive" {
+		writeError(w, http.StatusBadGateway, "resolve account proxy failed: "+err.Error())
+		return
+	}
+	creds := protocol.CredentialsFromMap(acc.Credentials)
+	info, err := a.fetchUserInfoWithProxy(r.Context(), creds, proxyValue, fallbackDirect)
+	if err != nil {
+		if status, _ := a.refreshLivenessWithProxy(r.Context(), acc, proxyValue, fallbackDirect); status == "alive" {
 			if fresh, getErr := a.db.GetAccount(r.Context(), acc.ID); getErr == nil {
 				acc = fresh
-				info, err = a.fetchUserInfo(r.Context(), protocol.CredentialsFromMap(acc.Credentials))
+				info, err = a.fetchUserInfoWithProxy(r.Context(), protocol.CredentialsFromMap(acc.Credentials), proxyValue, fallbackDirect)
 			}
 		}
 	}
@@ -848,9 +1213,12 @@ type wxappRequest struct {
 	Payload map[string]any `json:"payload"`
 }
 
-type wxappCall func(ctx context.Context, acc *store.WechatAccount, appID string, payload map[string]any) (map[string]any, error)
+type wxappCall func(ctx context.Context, acc *store.WechatAccount, appID string, payload map[string]any, proxyValue string, fallbackDirect bool) (map[string]any, error)
 
 func (a *App) callWXApp(w http.ResponseWriter, r *http.Request, requirePayload bool, call wxappCall) {
+	if !a.authorizeProtocol(w, r) {
+		return
+	}
 	var body wxappRequest
 	if err := decodeOptionalJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -868,22 +1236,65 @@ func (a *App) callWXApp(w http.ResponseWriter, r *http.Request, requirePayload b
 		writeError(w, http.StatusBadRequest, "payload is required")
 		return
 	}
+	// 取码链路必须过下游的「归属 / api_shared」闸门（resolveAPIAccountRef）：
+	// 上游的 resolveAccountRef 只做可见性判定，令牌侧会把 api_shared=false 的账号
+	// 也放给脚本读，等于下游「关闭脚本读取」的开关失效。
 	acc, ok := a.resolveAPIAccountRef(w, r, body.Ref)
 	if !ok {
 		return
 	}
-	result, err := a.invokeWXApp(r.Context(), acc, body.AppID, body.Payload, call)
+	result, err := a.invokeWithFleet(r.Context(), acc, body.AppID, body.Payload, call)
 	if err != nil {
 		var expired accountExpiredError
 		switch {
 		case errors.As(err, &expired):
-			writeError(w, http.StatusConflict, "account login_buffer expired (refresh failed); re-scan required")
+			writeAccountExpired(w, expired)
+		case writeIfCircuitOpen(w, err):
+		case writeIfAppIDDenied(w, err):
 		default:
-			writeError(w, http.StatusBadGateway, "call failed: "+err.Error())
+			writeProtocolCallError(w, err)
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"openid": acc.OpenID, "result": result})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"openid": acc.OpenID,
+		"account": map[string]any{
+			"id":       acc.ID,
+			"alias":    acc.Alias,
+			"nickname": acc.Nickname,
+			"remark":   acc.Remark,
+		},
+		"result": result,
+	})
+}
+
+// authorizeProtocol is opt-in for backwards compatibility. When configured,
+// every automation request must carry the token; this prevents a public
+// YYB_SERVER address plus a numeric account id from being abused by scanners.
+//
+// 下游定制：这条路由组上还叠着 fail-closed 的 API 令牌闸门（requireAPIToken，
+// YYB_API_TOKEN）。两个令牌都只看 Authorization 头，而渠道侧客户端往往只有
+// 一个请求头可用——QQ 浏览器伴生扩展（extensions/qbbrowser-token）就只发
+// "Authorization: Bearer <令牌>"。双令牌同时配置时，单头客户端无论填哪个都会被
+// 另一层判 401，/api/qbbrowser/token 的上报链路因此永远打不通。
+// 所以这里同样认可 API 令牌：它已经是常量时间比较的随机长令牌、且由
+// requireAPIToken 强制要求，认可它不会低于现有闸门的强度；反过来，
+// YYB_ALLOW_NO_AUTH=true + YYB_PROTOCOL_TOKEN 这种「只靠协议令牌」的部署
+// 仍然只认协议令牌（此时 API 令牌为空，分支不生效）。
+func (a *App) authorizeProtocol(w http.ResponseWriter, r *http.Request) bool {
+	expected := strings.TrimSpace(a.cfg.ProtocolToken)
+	if expected == "" {
+		return true
+	}
+	if api := strings.TrimSpace(a.cfg.APIToken); api != "" && apiTokenMatches(r, api) {
+		return true
+	}
+	provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+		writeError(w, http.StatusUnauthorized, "invalid protocol token")
+		return false
+	}
+	return true
 }
 
 func decodeOptionalJSON(r *http.Request, dst any) error {
@@ -894,24 +1305,144 @@ func decodeOptionalJSON(r *http.Request, dst any) error {
 	return err
 }
 
-// 账号解析（resolveAccountRef / resolveAccountFromQuery / resolveAPIAccountRef）
-// 统一放在 access.go，便于集中处理归属与“允许脚本读取”开关。
+func (a *App) resolveAccountFromQuery(w http.ResponseWriter, r *http.Request) (*store.WechatAccount, bool) {
+	ref := strings.TrimSpace(r.URL.Query().Get("ref"))
+	if ref == "" {
+		writeError(w, http.StatusBadRequest, "ref query param is required")
+		return nil, false
+	}
+	return a.resolveAccountRef(w, r, ref)
+}
+
+func (a *App) resolveAccountRef(w http.ResponseWriter, r *http.Request, ref string) (*store.WechatAccount, bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		writeError(w, http.StatusBadRequest, "ref is required")
+		return nil, false
+	}
+	acc, err := a.db.ResolveAccount(r.Context(), ref)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "account not found: "+ref)
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return nil, false
+	}
+	if !a.accountVisible(r, acc.ID) {
+		writeError(w, http.StatusNotFound, "账号不存在")
+		return nil, false
+	}
+	return acc, true
+}
+
+func (a *App) browserUser(r *http.Request) *auth.User {
+	user, _ := currentAuth(r)
+	if user != nil || a.auth == nil {
+		return user
+	}
+	cookie, err := r.Cookie(sessionCookie)
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	user, _, err = a.auth.UserBySession(r.Context(), cookie.Value)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
+func (a *App) accountVisible(r *http.Request, accountID int64) bool {
+	user := a.browserUser(r)
+	if a.auth == nil || user == nil || user.Role == "admin" {
+		return true
+	}
+	owner, err := a.auth.AccountOwner(r.Context(), accountID)
+	return err == nil && owner == user.ID
+}
+
+func (a *App) visibleAccounts(r *http.Request) ([]*store.WechatAccount, error) {
+	accounts, err := a.db.ListAccounts(r.Context())
+	if err != nil || a.auth == nil {
+		return accounts, err
+	}
+	user := a.browserUser(r)
+	if user == nil || user.Role == "admin" {
+		return accounts, nil
+	}
+	return a.accountsOwnedBy(r.Context(), user.ID, accounts)
+}
+
+func (a *App) accountsOwnedBy(ctx context.Context, userID int64, accounts []*store.WechatAccount) ([]*store.WechatAccount, error) {
+	owned, err := a.auth.AccountIDs(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]*store.WechatAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if _, ok := owned[account.ID]; ok {
+			visible = append(visible, account)
+		}
+	}
+	return visible, nil
+}
 
 func (a *App) refreshAll(w http.ResponseWriter, r *http.Request) {
-	accounts, err := a.listVisibleAccounts(r)
+	accounts, err := a.visibleAccounts(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	out := make([]map[string]any, 0, len(accounts))
 	for _, acc := range accounts {
-		out = append(out, refreshOut(acc, a.refreshLiveness(r.Context(), acc)))
+		status, refreshErr := a.refreshLiveness(r.Context(), acc)
+		out = append(out, refreshOut(acc, status, refreshErr))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (a *App) claimScannedAccount(r *http.Request, accountID int64) error {
+	if a.auth == nil {
+		return nil
+	}
+	user := a.browserUser(r)
+	if user == nil || user.Role == "admin" {
+		return nil
+	}
+	owner, err := a.auth.AccountOwner(r.Context(), accountID)
+	if err == nil && owner != user.ID {
+		return errors.New("该 YYB 账号已属于其他用户")
+	}
+	return a.auth.ClaimAccount(r.Context(), accountID, user.ID)
+}
+
+func (a *App) ensureScannedAccountAllowed(r *http.Request, openID string) error {
+	if a.auth == nil {
+		return nil
+	}
+	user := a.browserUser(r)
+	if user == nil || user.Role == "admin" {
+		return nil
+	}
+	existing, err := a.db.GetAccountByOpenID(r.Context(), openID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	owner, ownerErr := a.auth.AccountOwner(r.Context(), existing.ID)
+	if ownerErr == nil && owner == user.ID {
+		return nil
+	}
+	if ownerErr != nil && errors.Is(ownerErr, sql.ErrNoRows) {
+		return errors.New("该账号已存在但尚未分配给普通用户，请联系管理员")
+	}
+	return errors.New("该 YYB 账号已属于其他用户")
+}
+
 func (a *App) resyncAll(w http.ResponseWriter, r *http.Request) {
-	accounts, err := a.listVisibleAccounts(r)
+	accounts, err := a.visibleAccounts(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -943,14 +1474,18 @@ func (a *App) serveAvatar(w http.ResponseWriter, r *http.Request, acc *store.Wec
 	writeError(w, http.StatusNotFound, "no avatar")
 }
 
-// storeFromScan 落库扫码/快捷登录拿到的账号，并按当前登录用户写入归属。
-func (a *App) storeFromScan(ctx context.Context, r *http.Request, loginBuffer string, creds protocol.LoginBufferCredentials, userInfo map[string]any) (*store.WechatAccount, error) {
+func (a *App) storeFromScan(ctx context.Context, loginBuffer string, creds protocol.LoginBufferCredentials, userInfo map[string]any) (*store.WechatAccount, error) {
 	openid := creds.OpenID
 	nick := pickNickname(userInfo, creds.Nickname)
 	avatar := a.resolveAvatar(ctx, openid, userInfo)
 	status := "alive"
-	owner := a.ownerForScan(ctx, r, openid)
-	return a.db.UpsertAccount(ctx, openid, loginBuffer, stringPtrMaybe(nick), stringPtrMaybe(nick), stringPtrMaybe(avatar), userInfo, creds.ToMap(), &status, owner)
+	acc, err := a.db.UpsertAccount(ctx, openid, loginBuffer, stringPtrMaybe(nick), stringPtrMaybe(nick), stringPtrMaybe(avatar), userInfo, creds.ToMapForScan(), &status)
+	if err == nil {
+		// A new authorization starts with a clean breaker.
+		a.circuit.forget(acc.ID)
+		a.events.Emit("account.scanned", eventlog.ForAccount(acc))
+	}
+	return acc, err
 }
 
 func (a *App) resyncProfile(ctx context.Context, acc *store.WechatAccount) (*store.WechatAccount, error) {
@@ -965,44 +1500,341 @@ func (a *App) resyncProfile(ctx context.Context, acc *store.WechatAccount) (*sto
 	return a.db.GetAccount(ctx, acc.ID)
 }
 
-type accountExpiredError struct{ openid string }
+type accountExpiredError struct {
+	accountID int64
+	openid    string
+	cause     error
+}
 
 func (e accountExpiredError) Error() string { return "account expired: " + e.openid }
 
-func (a *App) invokeWXApp(ctx context.Context, acc *store.WechatAccount, appID string, payload map[string]any, call wxappCall) (map[string]any, error) {
-	proxy := a.cfg.TCPProxy
-	if _, err := a.db.GetSession(ctx, acc.ID, proxy); err == nil {
-		result, err := call(ctx, acc, appID, payload)
-		if err == nil {
+func (e accountExpiredError) Unwrap() error { return e.cause }
+
+func (a *App) invokeWXApp(ctx context.Context, acc *store.WechatAccount, appID string, payload map[string]any, call wxappCall) (resultOut map[string]any, errOut error) {
+	started := time.Now()
+	op := wxOperation(ctx)
+	defer func() {
+		fields := eventlog.ForAccount(acc).WithTarget(appID, op, wxAPIName(op, payload))
+		fields.DurationMS = time.Since(started).Milliseconds()
+		fields.Rejections = eventRejections(errOut)
+		fields.ResponseStage = responseFailureStage(errOut)
+		event := "protocol.succeeded"
+		var open *circuitOpenError
+		var denied *appIDDeniedError
+		switch {
+		case errors.As(errOut, &open):
+			if open.Scope == "pacing" {
+				// A burst can refuse hundreds of requests a minute; paceWXApp
+				// reports it as one summary event instead of filling the log.
+				return
+			}
+			// A locally short-circuited request never reached the upstream.
+			event = "protocol.circuit_deferred"
+		case errors.As(errOut, &denied):
+			event = "protocol.appid_denied"
+		case errOut != nil:
+			event = "protocol.failed"
+		}
+		a.events.Emit(event, fields)
+	}()
+	// A website-application AppID never gets a code and costs the account its
+	// authorization, so it is refused before anything else looks at the request.
+	// Explicit administrator/builtin denials apply to both routes. A learned
+	// wx.login failure only applies to mini-program login, not H5 OAuth.
+	if op == eventlog.OpGetCode || op == eventlog.OpH5Code {
+		if denied := a.appIDs.check(appID); denied != nil {
+			return nil, denied
+		}
+	}
+	// Bound queueing, protocol login and any credential recovery together.
+	ctx, cancel := context.WithTimeout(ctx, a.cfg.RequestTimeout+35*time.Second)
+	defer cancel()
+	if accountStatus(acc) == "expired" {
+		return nil, accountExpiredError{accountID: acc.ID, openid: acc.OpenID}
+	}
+	if accountNeedsRescan(acc) {
+		return nil, accountExpiredError{accountID: acc.ID, openid: acc.OpenID}
+	}
+	if op == eventlog.OpGetCode && !a.appIDs.isAllowed(appID) {
+		finish, denied := a.dynamicAppIDs.begin(appID)
+		if denied != nil {
+			return nil, denied
+		}
+		// Local gating, transport errors and typed business/credential errors
+		// do not extend an AppID hold. Only another empty-code outcome does.
+		defer func() { finish(errors.Is(errOut, protocol.ErrLoginCodeUnavailable)) }()
+	}
+	circuitEnabled, err := a.accountCircuitEnabled(ctx, acc.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read circuit policy: %w", err)
+	}
+	if circuitEnabled {
+		if breakerErr := a.circuit.check(acc.ID, appID, op); breakerErr != nil {
+			return nil, breakerErr
+		}
+	}
+	// Held-off requests above never take a slot. Everything that reaches the
+	// upstream is spaced per account, so a burst of scripts cannot turn into a
+	// burst of logins on one authorization.
+	if paceErr := a.paceWXApp(ctx, acc); paceErr != nil {
+		return nil, paceErr
+	}
+	proxyValue, fallbackDirect, err := a.resolveWXAppProxy(ctx, acc.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve account proxy: %w", err)
+	}
+	result, callErr := call(ctx, acc, appID, payload, proxyValue, fallbackDirect)
+	a.recordCircuitOutcome(ctx, acc, appID, op, callErr)
+	if callErr == nil {
+		// This mini-program request succeeded; forget earlier empty outcomes.
+		if op == eventlog.OpGetCode {
+			a.dynamicAppIDs.recordSuccess(appID)
+		}
+		return result, nil
+	}
+	if op == eventlog.OpGetCode {
+		a.learnDeniedAppID(acc, appID, callErr)
+	}
+	current, snapshotErr := a.db.GetAccount(ctx, acc.ID)
+	if errors.Is(callErr, store.ErrAccountAuthorizationChanged) || errors.Is(callErr, store.ErrSessionChanged) || snapshotErr == nil && !current.SameAuthorization(acc) {
+		return nil, store.ErrAccountAuthorizationChanged
+	}
+	if acc.SessionOnly() {
+		if errors.Is(callErr, protocol.ErrCachedSessionUnavailable) {
+			applied, err := a.db.ApplyCredentialRefresh(ctx, acc, "", nil, "expired")
+			if err != nil {
+				return nil, err
+			}
+			if !applied {
+				return nil, store.ErrAccountAuthorizationChanged
+			}
+			a.notifyOffline(acc, "expired", callErr)
+			return nil, accountExpiredError{accountID: acc.ID, openid: acc.OpenID, cause: callErr}
+		}
+		// A request using the retained PSK cannot trigger OAuth or ManualAuth.
+		return nil, callErr
+	}
+	if protocol.ProviderOf(acc) == "ldplayer" {
+		var ticket *protocol.ManualAuthRejectedError
+		if errors.As(callErr, &ticket) && ticket.Code == -10 {
+			// There is no verified ticket reissue endpoint for LDPlayer. Do not
+			// replay a definitively rejected scan ticket on every script call.
+			status := "expired"
+			if a.pool.HasReusableSession(ctx, acc.ID, proxyValue) {
+				status = store.StatusSessionOnly
+			}
+			applied, err := a.db.ApplyCredentialRefresh(ctx, acc, "", nil, status)
+			if err != nil {
+				return nil, errors.Join(callErr, err)
+			}
+			if !applied {
+				return nil, store.ErrAccountAuthorizationChanged
+			}
+			a.notifyOffline(acc, status, callErr)
+			return nil, accountExpiredError{accountID: acc.ID, openid: acc.OpenID, cause: callErr}
+		}
+	}
+	if op == eventlog.OpH5Code {
+		// An H5 authorization confirmation can issue a one-time code, so a
+		// failed request is never replayed after a forced refresh and never
+		// touches the account's credentials: whatever happened upstream is
+		// reported to the script and the keepalive loop stays in charge of the
+		// account's health.
+		return nil, callErr
+	}
+	var codeRecovery *protocol.CodeSessionRecoveryError
+	var credentialRecovery *protocol.CodeCredentialRecoveryError
+	ticketAccessRejected := errors.As(callErr, &codeRecovery) && errors.As(callErr, &credentialRecovery)
+	if errors.Is(callErr, protocol.ErrLoginCodeUnavailable) || errors.Is(callErr, protocol.ErrLoginCodeMalformed) || protocol.IsBusinessResponseRejection(callErr) || protocol.IsApplicationRequestRejection(callErr) || codeRecovery != nil && !ticketAccessRejected {
+		// An empty code or a bare authenticated application -14 does not
+		// establish account expiry. Other apps may use this same session.
+		return nil, callErr
+	}
+	var rejected *protocol.ManualAuthRejectedError
+	bufferRejected := errors.As(callErr, &rejected) && rejected.Code == -10
+	var networkErr net.Error
+	if ctx.Err() != nil || (!bufferRejected && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) || errors.As(callErr, &networkErr) || errors.Is(callErr, io.EOF) || errors.Is(callErr, io.ErrUnexpectedEOF))) {
+		// A failed transport does not establish that saved credentials expired.
+		// Preserve the session and original diagnostic; do not repeat a slow call.
+		return nil, callErr
+	}
+	if bufferRejected && !ticketAccessRejected {
+		// ManualAuth rejected the saved buffer before sending the operation.
+		// The access token may still be usable: fetch a fresh buffer without
+		// rotating tokens or changing scan/expiry timestamps. Pool persists the
+		// replacement protocol session, so no account credential write is needed.
+		if !a.pool.AllowLogin(acc.ID, protocol.ProviderOf(acc)) {
+			return nil, errors.Join(callErr, errLoginBudget)
+		}
+		buffer, bufferErr := a.fetchAccountLoginBuffer(ctx, acc)
+		if bufferErr == nil {
+			fresh := *acc
+			fresh.LoginBuffer = buffer
+			result, retryErr := call(ctx, &fresh, appID, payload, proxyValue, fallbackDirect)
+			if retryErr != nil {
+				return nil, errors.Join(callErr, fmt.Errorf("retry with fresh login buffer: %w", retryErr))
+			}
 			return result, nil
 		}
-		_ = a.db.InvalidateSession(ctx, acc.ID, proxy)
+		callErr = errors.Join(callErr, fmt.Errorf("fetch fresh login buffer: %w", bufferErr))
+		var pcRejected *pcmgr.BufferRejectedError
+		if errors.As(bufferErr, &pcRejected) && pcRejected.Code == 1 {
+			// Native DLL and Go both return this generic ticket refusal even
+			// when renewing the account key succeeds. Do not rotate a key on
+			// every API test or misclassify it as a revoked account credential.
+			return nil, callErr
+		}
+		if ctx.Err() != nil || errors.Is(bufferErr, context.Canceled) || errors.Is(bufferErr, context.DeadlineExceeded) || errors.As(bufferErr, &networkErr) || errors.Is(bufferErr, io.EOF) || errors.Is(bufferErr, io.ErrUnexpectedEOF) {
+			return nil, callErr
+		}
 	}
-	status := a.refreshLiveness(ctx, acc)
+	// A forced refresh is another OAuth-layer call. Past the account's login
+	// budget the request fails with the error it has, and the cached session is
+	// left alone rather than invalidated for a repair that will not happen.
+	if !a.pool.AllowLogin(acc.ID, protocol.ProviderOf(acc)) {
+		return nil, errors.Join(callErr, errLoginBudget)
+	}
+	if !ticketAccessRejected {
+		_ = a.db.InvalidateSessionForAccount(ctx, acc, proxyValue)
+	}
+	// Credential recovery always uses the account's refresh route, even when
+	// this protocol call explicitly selected direct egress.
+	status, _, refreshErr := a.refreshAccount(withRefreshSource(ctx, eventlog.SourceOnDemand), acc, true)
+	status = a.finishLivenessRefresh(ctx, acc, status)
 	if status != "alive" {
-		return nil, accountExpiredError{openid: acc.OpenID}
+		if status == "expired" {
+			return nil, accountExpiredError{accountID: acc.ID, openid: acc.OpenID, cause: errors.Join(callErr, refreshErr)}
+		}
+		return nil, errors.Join(callErr, fmt.Errorf("refresh account credentials: %w", refreshErr))
+	}
+	if refreshErr != nil {
+		return nil, errors.Join(callErr, fmt.Errorf("refresh account credentials: %w", refreshErr))
 	}
 	fresh, err := a.db.GetAccount(ctx, acc.ID)
 	if err == nil && fresh != nil {
 		acc = fresh
 	}
-	return call(ctx, acc, appID, payload)
+	return call(ctx, acc, appID, payload, proxyValue, fallbackDirect)
 }
 
-func (a *App) invokeGetCode(ctx context.Context, acc *store.WechatAccount, appID string, _ map[string]any) (map[string]any, error) {
-	return a.pool.GetCode(ctx, acc.LoginBuffer, appID, acc.ID, a.cfg.TCPProxy)
+// recordCircuitOutcome classifies one protocol result for the breaker. Only an
+// application -14 or an empty code count toward holding a target or session
+// off; network, ManualAuth and OAuth failures are handled elsewhere and never
+// trip it. A success clears the account's breaker state.
+func (a *App) recordCircuitOutcome(ctx context.Context, acc *store.WechatAccount, appID, op string, callErr error) {
+	if enabled, err := a.accountCircuitEnabled(ctx, acc.ID); err != nil || !enabled {
+		return
+	}
+	outcome := circuitOther
+	switch {
+	case callErr == nil:
+		outcome = circuitOK
+	case protocol.IsApplicationRequestRejection(callErr):
+		outcome = circuitAppReject
+	case errors.Is(callErr, protocol.ErrLoginCodeUnavailable):
+		outcome = circuitEmptyCode
+	}
+	if scope := a.circuit.record(acc.ID, appID, op, outcome); scope != "" {
+		fields := eventlog.ForAccount(acc).WithTarget(appID, op, "")
+		fields.Rejections = []eventlog.Rejection{{Stage: "circuit_" + scope}}
+		a.events.Emit("protocol.circuit_open", fields)
+		log.Printf("protocol: account id=%d %s circuit opened to stop repeating a rejected request", acc.ID, scope)
+	}
 }
 
-func (a *App) invokeGetPhoneNumber(ctx context.Context, acc *store.WechatAccount, appID string, _ map[string]any) (map[string]any, error) {
-	return a.pool.GetPhoneNumber(ctx, acc.LoginBuffer, appID, acc.ID, a.cfg.TCPProxy)
+func (a *App) fetchAccountLoginBuffer(ctx context.Context, acc *store.WechatAccount) (string, error) {
+	// Credential requests follow the account's configured egress, even when
+	// protocol calls explicitly use direct networking.
+	proxyValue, fallbackDirect, err := a.resolveAccountProxy(ctx, acc.ID)
+	if err != nil {
+		return "", err
+	}
+	creds := protocol.CredentialsFromMap(acc.Credentials)
+	return a.fetchLoginBufferWithProxy(ctx, creds, proxyValue, fallbackDirect)
 }
 
-func (a *App) invokeOperateWXData(ctx context.Context, acc *store.WechatAccount, appID string, payload map[string]any) (map[string]any, error) {
-	return a.pool.OperateWXData(ctx, acc.LoginBuffer, appID, payload, acc.ID, a.cfg.TCPProxy)
+func (a *App) fetchLoginBufferWithProxy(ctx context.Context, creds protocol.LoginBufferCredentials, proxyValue string, fallbackDirect bool) (string, error) {
+	if proxyValue == "" {
+		return a.fetchLoginBuffer(ctx, creds)
+	}
+	client, err := qr.NewClientWithProxy(a.cfg.RequestTimeout, proxyValue, fallbackDirect)
+	if err != nil {
+		return "", err
+	}
+	return client.LoginBuffers().FetchLoginBuffer(ctx, creds)
 }
 
-func refreshOut(acc *store.WechatAccount, status string) map[string]any {
-	return map[string]any{"id": acc.ID, "openid": acc.OpenID, "uin": acc.UIN, "nickname": acc.Nickname, "status": status}
+// accountNeedsRescan covers accounts whose refresh attempt was inconclusive
+// but whose cached credential has already expired. They must not be sent into
+// every script invocation until the user scans again.
+func accountNeedsRescan(acc *store.WechatAccount) bool {
+	if acc == nil || accountStatus(acc) != "unknown" || acc.Credentials == nil {
+		return false
+	}
+	expiresAt := protocol.CredentialsFromMap(acc.Credentials).ExpiresAt
+	if protocol.CredentialsFromMap(acc.Credentials).Provider == "pcmgr" {
+		return false
+	}
+	return expiresAt > 0 && expiresAt <= time.Now().Unix()
+}
+
+func (a *App) invokeGetCode(ctx context.Context, acc *store.WechatAccount, appID string, _ map[string]any, proxyValue string, fallbackDirect bool) (map[string]any, error) {
+	result, err := a.pool.GetCode(ctx, acc.LoginBuffer, appID, acc.ID, proxyValue, fallbackDirect, acc)
+	if err == nil || !protocol.IsApplicationRequestRejection(err) {
+		return result, err
+	}
+	return a.pool.RecoverCodeSession(ctx, acc, appID, proxyValue, fallbackDirect, err, func(ctx context.Context) (string, error) {
+		return a.fetchAccountLoginBuffer(ctx, acc)
+	})
+}
+
+func (a *App) invokeH5Code(ctx context.Context, acc *store.WechatAccount, appID string, payload map[string]any, proxyValue string, fallbackDirect bool) (map[string]any, error) {
+	request := h5CodeParams(payload)
+	request.AppID = appID
+	if request.RedirectURI == "" {
+		return nil, fmt.Errorf("h5 code requires redirect_uri (and optional scope, state) inside payload")
+	}
+	return a.pool.GetH5Code(ctx, acc.LoginBuffer, request, acc.ID, proxyValue, fallbackDirect, acc)
+}
+
+// h5CodeParams reads the official-account OAuth parameters scripts send in the
+// payload. Empty scope defaults to snsapi_base and an empty state is generated
+// inside the protocol layer.
+func h5CodeParams(payload map[string]any) oauth.Request {
+	field := func(keys ...string) string {
+		for _, key := range keys {
+			if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+		return ""
+	}
+	return oauth.Request{
+		RedirectURI: field("redirect_uri", "redirect"), Scope: field("scope"),
+		State: field("state"), ComponentAppID: field("component_appid"),
+	}
+}
+
+func (a *App) invokeGetPhoneNumber(ctx context.Context, acc *store.WechatAccount, appID string, _ map[string]any, proxyValue string, fallbackDirect bool) (map[string]any, error) {
+	return a.pool.GetPhoneNumber(ctx, acc.LoginBuffer, appID, acc.ID, proxyValue, fallbackDirect, acc)
+}
+
+func (a *App) invokeOperateWXData(ctx context.Context, acc *store.WechatAccount, appID string, payload map[string]any, proxyValue string, fallbackDirect bool) (map[string]any, error) {
+	return a.pool.OperateWXData(ctx, acc.LoginBuffer, appID, payload, acc.ID, proxyValue, fallbackDirect, acc)
+}
+
+func refreshOut(acc *store.WechatAccount, status string, refreshErr error) map[string]any {
+	out := map[string]any{
+		"id": acc.ID, "openid": acc.OpenID, "uin": acc.UIN, "nickname": acc.Nickname,
+		"status": status, "rescan_required": status == "expired" || status == store.StatusSessionOnly,
+	}
+	if refreshErr != nil {
+		out["refresh_error"] = refreshErr.Error()
+		if diagnostics := credentialDiagnostics(refreshErr); len(diagnostics) > 0 {
+			out["upstream_errors"] = diagnostics
+		}
+	}
+	return out
 }
 
 func pickNickname(userInfo map[string]any, fallback string) string {
@@ -1067,7 +1899,7 @@ func looksLikeImage(data []byte) bool {
 	return false
 }
 
-func (a *App) getQRSession(id string) *qr.Session {
+func (a *App) getQRSession(id string) *qrLoginSession {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.qrSessions[id]
@@ -1075,6 +1907,12 @@ func (a *App) getQRSession(id string) *qr.Session {
 
 func (a *App) dropQRSession(id string) {
 	a.mu.Lock()
+	login := a.qrSessions[id]
+	if login != nil {
+		login.mu.Lock()
+		login.cancelled = true
+		login.mu.Unlock()
+	}
 	delete(a.qrSessions, id)
 	a.mu.Unlock()
 	_ = os.Remove(a.resources.qrPath(id))
@@ -1084,7 +1922,10 @@ func (a *App) pruneQR() {
 	a.mu.Lock()
 	var drop []string
 	for sid, sess := range a.qrSessions {
-		if sess.Age() > a.cfg.QRSessionTTL {
+		if sess.Session.Age() > a.cfg.QRSessionTTL {
+			sess.mu.Lock()
+			sess.cancelled = true
+			sess.mu.Unlock()
 			drop = append(drop, sid)
 		}
 	}
@@ -1148,6 +1989,7 @@ func requestLogger(next http.Handler) http.Handler {
 }
 
 func serveFileOrText(w http.ResponseWriter, r *http.Request, path, fallback string) {
+	w.Header().Set("Cache-Control", "no-store")
 	if _, err := os.Stat(path); err == nil {
 		http.ServeFile(w, r, path)
 		return

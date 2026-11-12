@@ -2,16 +2,14 @@ package httpapi
 
 import (
 	"context"
-	"errors"
 	"strings"
+	"time"
 )
-
-// 面板没有提供「列脚本文件」的能力（如代代面板），上层据此降级为从定时任务反推。
-var errPanelScriptsUnsupported = errors.New("面板不支持列出脚本文件")
 
 const (
 	PanelTypeQingLong = "qinglong"
 	PanelTypeDaidai   = "daidai"
+	PanelTypeArcadia  = "arcadia"
 )
 
 type qingLongEnv struct {
@@ -41,6 +39,7 @@ type qingLongCron struct {
 	LogPath            string  `json:"log_path"`
 	Status             any     `json:"status"`
 	LastExecutionTime  any     `json:"last_execution_time"`
+	LastRunAt          string  `json:"last_run_at"`
 	LastRunningTime    any     `json:"last_running_time"`
 	IsDisabled         *int    `json:"isDisabled"`
 	Enabled            *bool   `json:"enabled"`
@@ -78,6 +77,9 @@ func (c qingLongCron) enabled() bool {
 }
 
 func (c qingLongCron) running() bool {
+	if status, ok := c.Status.(string); ok {
+		return status == "running"
+	}
 	if c.IsDisabled != nil {
 		switch v := c.Status.(type) {
 		case float64:
@@ -109,6 +111,9 @@ func (c qingLongCron) running() bool {
 }
 
 func (c qingLongCron) getLastExecutionAt() int64 {
+	if parsed, err := time.Parse(time.RFC3339Nano, c.LastRunAt); err == nil {
+		return parsed.Unix()
+	}
 	switch v := c.LastExecutionTime.(type) {
 	case int64:
 		return v
@@ -116,6 +121,10 @@ func (c qingLongCron) getLastExecutionAt() int64 {
 		return int64(v)
 	case int:
 		return int64(v)
+	case string:
+		if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return parsed.Unix()
+		}
 	}
 	return 0
 }
@@ -130,25 +139,6 @@ func (c qingLongCron) getLastRunningTime() int64 {
 		return int64(v)
 	}
 	return 0
-}
-
-// qingLongScript 是面板脚本目录里的一个脚本文件。
-//
-// Path 是相对脚本根目录的完整路径（如 `code脚本/绿鼻子.js`），它同时是网关给账号
-// 挂任务时写进 `task <Path>` 的内容；Dir 是它所在目录，根目录下的脚本 Dir 为空。
-type qingLongScript struct {
-	Path string
-	Name string
-	Dir  string
-}
-
-func newQingLongScript(path string) qingLongScript {
-	path = strings.Trim(strings.ReplaceAll(strings.TrimSpace(path), `\`, "/"), "/")
-	dir, name := "", path
-	if idx := strings.LastIndex(path, "/"); idx != -1 {
-		dir, name = strings.Trim(path[:idx], "/"), path[idx+1:]
-	}
-	return qingLongScript{Path: path, Name: name, Dir: dir}
 }
 
 type qingLongLogEntry struct {
@@ -171,9 +161,6 @@ type PanelDriver interface {
 	UpdateEnvEntry(ctx context.Context, env qingLongEnv, newValue string) error
 	SetEnvsEnabled(ctx context.Context, ids []int64, enabled bool) error
 	SetNamedEnvsEnabled(ctx context.Context, names []string, enabled bool) error
-	// ListScripts 列出面板脚本目录里的脚本文件。面板没有这个能力时返回错误，
-	// 调用方会降级为「从定时任务反推脚本」。
-	ListScripts(ctx context.Context) ([]qingLongScript, error)
 	ListCrons(ctx context.Context, search string) ([]qingLongCron, error)
 	CreateCron(ctx context.Context, name, command, schedule, taskBefore, logName string) (*qingLongCron, error)
 	UpdateCron(ctx context.Context, id int64, name, command, schedule, taskBefore, logName string) error
@@ -186,8 +173,12 @@ type PanelDriver interface {
 }
 
 func normalizePanelType(pType string) string {
-	if pType == PanelTypeDaidai {
+	switch strings.ToLower(strings.TrimSpace(pType)) {
+	case PanelTypeDaidai:
 		return PanelTypeDaidai
+	case PanelTypeArcadia:
+		return PanelTypeArcadia
+	default:
+		return PanelTypeQingLong
 	}
-	return PanelTypeQingLong
 }

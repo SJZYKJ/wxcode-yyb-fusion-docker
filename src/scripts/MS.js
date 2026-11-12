@@ -29,7 +29,7 @@ if (typeof $ === 'undefined') {
   };
 }
 
-// ====================== YYB Go 账号（环境变量 YYB_SERVER = 地址@微信账号标识，多行） ======================
+// ====================== wxcode-YYB 账号（环境变量 YYB_SERVER = 地址@微信账号标识，多行） ======================
 const SERVERS = (process.env.YYB_SERVER || "")
     .split(/\r?\n/)
     .map(s => s.trim())

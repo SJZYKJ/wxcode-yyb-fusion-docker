@@ -1,11 +1,17 @@
 package qr
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -16,7 +22,11 @@ import (
 	"sync"
 	"time"
 
+	"yyb_go/internal/gameassist"
+	"yyb_go/internal/ldplayer"
+	"yyb_go/internal/pcmgr"
 	"yyb_go/internal/protocol"
+	"yyb_go/internal/qbbrowser"
 )
 
 const (
@@ -33,6 +43,8 @@ const (
 	callbackURL  = "https://yybadaccess.3g.qq.com/pc_yyb/pcyyb_oauth"
 	qrBase       = "https://open.weixin.qq.com/connect/qrcode/"
 	longPollBase = "https://long.open.weixin.qq.com/connect/l/qrconnect"
+	qrPollWait   = 35 * time.Second
+	qrPollLimit  = 40 * time.Second
 )
 
 var (
@@ -42,9 +54,12 @@ var (
 )
 
 type Session struct {
+	Product       string
+	ClientGUID    string
 	ID            string
 	WXUUID        string
 	QRCodeURL     string
+	State         string
 	CreatedAt     time.Time
 	HTTPClient    *http.Client
 	Jar           http.CookieJar
@@ -53,6 +68,7 @@ type Session struct {
 	LoginBuffer   string
 	Status        string
 	Error         string
+	authError     error
 	mu            sync.Mutex
 }
 
@@ -72,20 +88,36 @@ type PollResult struct {
 
 type Client struct {
 	timeout      time.Duration
+	transport    http.RoundTripper
 	loginBuffers *protocol.LoginBufferClient
 }
 
 func NewClient(timeout time.Duration) *Client {
+	client, _ := NewClientWithProxy(timeout, "", false)
+	return client
+}
+
+func NewClientWithProxy(timeout time.Duration, proxyValue string, fallbackDirect bool) (*Client, error) {
+	transport, err := protocol.NewHTTPTransport(proxyValue, fallbackDirect)
+	if err != nil {
+		return nil, err
+	}
+	httpClient := &http.Client{Timeout: timeout, Transport: transport}
 	return &Client{
 		timeout:      timeout,
-		loginBuffers: protocol.NewLoginBufferClient(timeout),
-	}
+		transport:    transport,
+		loginBuffers: protocol.NewLoginBufferClientWithHTTPClient(httpClient, timeout),
+	}, nil
 }
 
 func (c *Client) LoginBuffers() *protocol.LoginBufferClient { return c.loginBuffers }
 
 func (c *Client) GetQRCodeImage(ctx context.Context) (ImageResult, error) {
-	sess, err := c.CreateSession(ctx)
+	return c.GetQRCodeImageForProduct(ctx, "appstore")
+}
+
+func (c *Client) GetQRCodeImageForProduct(ctx context.Context, product string) (ImageResult, error) {
+	sess, err := c.CreateSessionForProduct(ctx, product)
 	if err != nil {
 		return ImageResult{}, err
 	}
@@ -97,12 +129,71 @@ func (c *Client) GetQRCodeImage(ctx context.Context) (ImageResult, error) {
 }
 
 func (c *Client) CreateSession(ctx context.Context) (*Session, error) {
+	return c.CreateSessionForProduct(ctx, "appstore")
+}
+
+func OAuthURL(product string) (string, error) {
+	switch product {
+	case "", "appstore":
+		return oauthURL, nil
+	case "pcmgr":
+		return "https://open.weixin.qq.com/connect/qrconnect?" + url.Values{"appid": {pcmgr.HostAppID}, "redirect_uri": {"https://security.guanjia.qq.com/login"}, "response_type": {"code"}, "scope": {"snsapi_login,snsapi_runtime_pcsdk"}, "state": {"233"}, "self_redirect": {"true"}}.Encode(), nil
+	case "qbbrowser":
+		state, err := randomHex(16)
+		if err != nil {
+			return "", err
+		}
+		return "https://open.weixin.qq.com/connect/qrconnect?" + url.Values{
+			"appid":         {qbbrowser.HostAppID},
+			"redirect_uri":  {"https://go.browser.qq.com/wx-login.html"},
+			"response_type": {"code"},
+			"scope":         {"snsapi_login,snsapi_runtime_pcsdk"},
+			"state":         {state},
+			"self_redirect": {"true"},
+		}.Encode(), nil
+	case "ldplayer":
+		// 雷电游戏中心的 OAuth 入口：标准 WeChat qrconnect 但 appid 和
+		// redirect 指向雷电，scope 与其它 runtime_pcsdk 渠道一致。
+		return "https://open.weixin.qq.com/connect/qrconnect?" + url.Values{
+			"appid":         {ldplayer.OAuthAppID},
+			"redirect_uri":  {ldplayer.OAuthRedirectURI},
+			"response_type": {"code"},
+			"scope":         {ldplayer.OAuthScope},
+			"state":         {"ldplayer"},
+			"self_redirect": {"true"},
+		}.Encode(), nil
+	case "gameassist":
+		// GameAssist.exe fast-login page (GameAssist.log): its own open-platform
+		// appid redirecting into the syzslogin callback on the shared gateway.
+		// The official client sends state=100*Math.random() and the gateway
+		// rejects non-numeric state at the callback (-109), so the session
+		// must carry the same numeric state through to the exchange.
+		return "https://open.weixin.qq.com/connect/qrconnect?" + url.Values{
+			"appid":         {gameassist.OAuthAppID},
+			"redirect_uri":  {gameassist.OAuthRedirectURI + "?" + url.Values{"login_type": {"wx"}, "domain": {"1"}, "syzs_prefix": {""}}.Encode()},
+			"response_type": {"code"},
+			"scope":         {gameassist.OAuthScope},
+			"state":         {gameassist.RandomState()},
+			"fast_login":    {"1"},
+			"self_redirect": {"true"},
+			"style":         {"black"},
+		}.Encode(), nil
+	default:
+		return "", fmt.Errorf("unsupported scan channel")
+	}
+}
+
+func (c *Client) CreateSessionForProduct(ctx context.Context, product string) (*Session, error) {
+	oauth, err := OAuthURL(product)
+	if err != nil {
+		return nil, err
+	}
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{Timeout: c.timeout, Jar: jar}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oauthURL, nil)
+	hc := &http.Client{Timeout: c.timeout, Jar: jar, Transport: c.transport}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oauth, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -122,10 +213,20 @@ func (c *Client) CreateSession(ctx context.Context) (*Session, error) {
 		return nil, err
 	}
 	wxuuid := m[1]
+	guid, err := randomHex(16)
+	if err != nil {
+		return nil, err
+	}
+	state := ""
+	if parsed, perr := url.Parse(oauth); perr == nil {
+		state = parsed.Query().Get("state")
+	}
 	return &Session{
+		Product: product, ClientGUID: guid,
 		ID:         id,
 		WXUUID:     wxuuid,
 		QRCodeURL:  qrBase + wxuuid,
+		State:      state,
 		CreatedAt:  time.Now(),
 		HTTPClient: hc,
 		Jar:        jar,
@@ -146,7 +247,14 @@ func (c *Client) FetchQRCodeImage(ctx context.Context, sess *Session) ([]byte, e
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("QR image HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateQRCodeImage(data); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func (c *Client) PollQRCode(ctx context.Context, sess *Session) (PollResult, error) {
@@ -163,15 +271,23 @@ func (c *Client) PollQRCode(ctx context.Context, sess *Session) (PollResult, err
 		"uuid": {sess.WXUUID},
 		"_":    {strconv.FormatInt(time.Now().UnixMilli(), 10)},
 	}.Encode()
-	reqCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, qrPollWait)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return PollResult{}, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := sess.HTTPClient.Do(req)
+	pollClient := *sess.HTTPClient
+	if pollClient.Timeout == 0 || pollClient.Timeout < qrPollLimit {
+		pollClient.Timeout = qrPollLimit
+	}
+	resp, err := pollClient.Do(req)
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			sess.Status = "pending"
+			return PollResult{Status: "pending"}, nil
+		}
 		return PollResult{}, err
 	}
 	defer resp.Body.Close()
@@ -214,6 +330,97 @@ func (c *Client) GetLoginBuffer(ctx context.Context, sess *Session) (protocol.Lo
 	if sess.AuthorizeCode == "" {
 		return protocol.LoginBufferResult{}, fmt.Errorf("QR session is not authorized yet")
 	}
+	if sess.Product == "pcmgr" {
+		if sess.Credentials == nil {
+			pc, err := pcmgr.ExchangeCode(ctx, sess.HTTPClient, sess.AuthorizeCode, sess.ClientGUID)
+			if err != nil {
+				return protocol.LoginBufferResult{}, err
+			}
+			sess.Credentials = &protocol.LoginBufferCredentials{Provider: "pcmgr", PCMgr: pc, OpenID: pc.Identity(), Nickname: pc.Nickname, ExpiresAt: pc.NextRenewAt(), ExpiresIn: pc.NextRenewAt() - pc.RenewedAt, RefreshTokenObservedAt: time.Now().Unix()}
+		}
+		buffer, err := c.loginBuffers.FetchLoginBuffer(ctx, *sess.Credentials)
+		if err != nil {
+			return protocol.LoginBufferResult{}, err
+		}
+		sess.LoginBuffer = buffer
+		sess.Status = "confirmed"
+		return protocol.LoginBufferResult{LoginBuffer: buffer, Credentials: *sess.Credentials}, nil
+	}
+	if sess.Product == "qbbrowser" {
+		if sess.Credentials == nil {
+			if sess.authError != nil {
+				return protocol.LoginBufferResult{}, sess.authError
+			}
+			result, err := qbbrowser.ExchangeCode(ctx, sess.HTTPClient, sess.AuthorizeCode)
+			if err != nil {
+				// OAuth codes are single-use. Even a lost reply may have consumed
+				// the code; repeated UI confirms must not send it again.
+				sess.authError = err
+				return protocol.LoginBufferResult{}, err
+			}
+			expiresAt := int64(0)
+			if result.ExpiresIn > 0 {
+				expiresAt = time.Now().Unix() + result.ExpiresIn
+			}
+			sess.Credentials = &protocol.LoginBufferCredentials{
+				Provider: "qbbrowser", QBBrowser: result.Credentials, OpenID: result.Credentials.Identity(),
+				AccessToken: result.Credentials.QBAccessToken, RefreshToken: result.Credentials.WXRefreshToken,
+				ExpiresIn: result.ExpiresIn, ExpiresAt: expiresAt, ExpirySource: "upstream", LoginType: "WX",
+				RefreshTokenObservedAt: time.Now().Unix(),
+			}
+		}
+		buffer, err := c.loginBuffers.FetchLoginBuffer(ctx, *sess.Credentials)
+		if err != nil {
+			return protocol.LoginBufferResult{}, err
+		}
+		sess.LoginBuffer, sess.Status = buffer, "confirmed"
+		return protocol.LoginBufferResult{LoginBuffer: buffer, Credentials: *sess.Credentials}, nil
+	}
+	if sess.Product == "ldplayer" {
+		// 雷电渠道：OAuth code 直接换 buffer，没有中间凭据层。
+		// buffer 即 LoginBuffer——后续 ilink 栈自动消费。
+		if sess.LoginBuffer == "" {
+			buffer, err := ldplayer.FetchBuffer(ctx, sess.HTTPClient, sess.AuthorizeCode)
+			if err != nil {
+				return protocol.LoginBufferResult{}, err
+			}
+			sess.LoginBuffer = buffer
+			// 最小凭据：仅标记渠道，buffer 存在 acc.LoginBuffer。
+			openid, idErr := ldplayer.BufferIdentity(buffer)
+			if idErr != nil {
+				return protocol.LoginBufferResult{}, idErr
+			}
+			sess.Credentials = &protocol.LoginBufferCredentials{
+				Provider: "ldplayer", OpenID: openid, LoginType: "WX",
+				RefreshTokenObservedAt: time.Now().Unix(),
+			}
+		}
+		buffer := sess.LoginBuffer
+		sess.Status = "confirmed"
+		return protocol.LoginBufferResult{LoginBuffer: buffer, Credentials: *sess.Credentials}, nil
+	}
+	if sess.Product == "gameassist" {
+		if sess.Credentials == nil {
+			ga, err := gameassist.ExchangeCode(ctx, sess.HTTPClient, sess.AuthorizeCode, sess.State)
+			if err != nil {
+				return protocol.LoginBufferResult{}, err
+			}
+			// The provider routes later refresh/check-login to syzslogin.
+			sess.Credentials = &protocol.LoginBufferCredentials{
+				Provider: "gameassist", OpenID: ga.OpenID, AccessToken: ga.AccessToken, RefreshToken: ga.RefreshToken,
+				LoginType: defaultString(ga.LoginType, "WX"), Nickname: ga.Nickname,
+				ExpiresAt: ga.ExpiresAt, ExpiresIn: ga.ExpiresIn, RefreshTokenObservedAt: time.Now().Unix(),
+				ExpirySource: ga.ExpirySource,
+			}
+		}
+		buffer, err := c.loginBuffers.FetchLoginBuffer(ctx, *sess.Credentials)
+		if err != nil {
+			return protocol.LoginBufferResult{}, err
+		}
+		sess.LoginBuffer = buffer
+		sess.Status = "confirmed"
+		return protocol.LoginBufferResult{LoginBuffer: buffer, Credentials: *sess.Credentials}, nil
+	}
 	cb := callbackURL + "?" + url.Values{
 		"login_type": {"WX"},
 		"code":       {sess.AuthorizeCode},
@@ -245,6 +452,10 @@ func (c *Client) GetLoginBuffer(ctx context.Context, sess *Session) (protocol.Lo
 }
 
 func (c *Client) GetLoginBufferFromCode(ctx context.Context, code string) (protocol.LoginBufferResult, error) {
+	return c.GetLoginBufferFromCodeForProduct(ctx, code, "appstore")
+}
+
+func (c *Client) GetLoginBufferFromCodeForProduct(ctx context.Context, code, product string) (protocol.LoginBufferResult, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return protocol.LoginBufferResult{}, fmt.Errorf("authorize code is empty")
@@ -254,7 +465,8 @@ func (c *Client) GetLoginBufferFromCode(ctx context.Context, code string) (proto
 		return protocol.LoginBufferResult{}, err
 	}
 	sess := &Session{
-		HTTPClient:    &http.Client{Timeout: c.timeout, Jar: jar},
+		Product:       product,
+		HTTPClient:    &http.Client{Timeout: c.timeout, Jar: jar, Transport: c.transport},
 		Jar:           jar,
 		AuthorizeCode: code,
 		Status:        "authorized",
@@ -268,7 +480,25 @@ func (c *Client) RefreshLoginBuffer(ctx context.Context, creds protocol.LoginBuf
 }
 
 func DataURIJPEG(data []byte) string {
-	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
+	return DataURIImage(data)
+}
+
+func DataURIImage(data []byte) string {
+	mime := http.DetectContentType(data)
+	if !strings.HasPrefix(mime, "image/") {
+		mime = "image/jpeg"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+func validateQRCodeImage(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("微信二维码接口返回空内容，可能被网络或代理拦截")
+	}
+	if _, format, err := image.DecodeConfig(bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("微信二维码接口返回的不是有效图片，可能被网络或代理拦截（%s）", format)
+	}
+	return nil
 }
 
 func parsePoll(text string) (*int, string) {
@@ -308,13 +538,14 @@ func credentialsFromJar(jar http.CookieJar, rawURL string) (protocol.LoginBuffer
 		}
 	}
 	return protocol.LoginBufferCredentials{
-		OpenID:       openid,
-		AccessToken:  accessToken,
-		RefreshToken: values["refreshtoken"],
-		LoginType:    defaultString(values["logintype"], "WX"),
-		Nickname:     values["nickname"],
-		ExpiresAt:    time.Now().Unix() + expiresIn,
-		ExpiresIn:    expiresIn,
+		OpenID:            openid,
+		AccessToken:       accessToken,
+		RefreshToken:      values["refreshtoken"],
+		RefreshBusinessID: "pc_yyb",
+		LoginType:         defaultString(values["logintype"], "WX"),
+		Nickname:          values["nickname"],
+		ExpiresAt:         time.Now().Unix() + expiresIn,
+		ExpiresIn:         expiresIn,
 	}, nil
 }
 

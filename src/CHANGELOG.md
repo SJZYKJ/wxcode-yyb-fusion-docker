@@ -1,98 +1,129 @@
 # 更新日志
 
-本项目按实际提交时间记录主要功能变化，便于部署后确认版本内容。
+本项目（wxcode-YYB）按实际提交时间记录主要功能变化，便于部署后确认版本内容。
 
-## 2026-09-17
+## 2026-11-12
 
-> ⚠️ 仓库维护提示：GitHub 会扫描**整条提交信息**（含正文）里的跳过标记
-> （`[skip ci]` / `[ci skip]` / `[no ci]` / `[skip actions]` / `[actions skip]`），
-> 命中就整个 workflow 不触发。所以「在正文里解释为什么**没有**加 `[skip ci]`」
-> 会导致这一行文字把构建也一起跳过——想触发构建时，正文里也别出现这些字面量。
+### v17 · 添加多个取码渠道 + 重构界面
 
-- **v4.3.0 · 登录页新增「版本更新」记录与个人主页入口（本次）**：右栏在原说明下方加入更新记录时间线（v6 / v5 / v4 三条，**版本号与 README.md 顶部的版本列表逐条对应**，全部用非技术表述，讲清「修好了什么、为什么值得升级」）与作者个人主页按钮（`zy.chun7.top`，新窗口打开、带 `rel="noopener noreferrer"`）；左栏表单下方补一行极简的「当前版本 · 个人主页」，因为右栏在 760px 以下会被隐藏，窄屏需要这个兜底入口。新增样式全部限定在 `auth.css` 尾部的新 class（`.changelog-*` / `.context-foot` / `.auth-meta`），不改动注册页共用的 `.auth-context` 基础规则；右栏在桌面端改为 `max-height:100vh` + `overflow-y:auto`，内容变高时栏内滚动而不是把登录表单一起顶出视口。
-- v4.3.0 · 首页版本号改为跟随镜像自动显示（不用再手工改登录页）：`Dockerfile` 新增 `ARG VERSION`，构建时把它写成镜像内的 `/app/resource/static/version.json`（公开静态文件，无需鉴权，值经 `sed` 白名单过滤保证是合法 JSON）；登录页 fetch 后在两处 `.app-version` 占位填入，取不到就保持占位符 `—`（**故意不写死版本号**，否则每次发版都会过期）。CI 在 `build-push-action` 用 `build-args` 传入本次 `v<N>`；`compose.build.yaml` 本地自建镜像写 `local`。真实进程验证 22/22 通过（登录页 200、三条记录与两处主页链接齐备、`/static/version.json` 返回 `{"version":"v7"}`、删掉该文件后前端回落到兜底值）。另修两处排版：新增 `761–1080px` 断点把左栏收紧到 400px、右栏内边距减到 32px（820px 宽下右栏正文原本只有 228px、一行只放得下 8 个字，现回到 356px）；`.auth-context` 的对齐由 `align-items:flex-end` 改为 `flex-start` + `.context-inner{margin-top:auto}`，视觉上仍是内容贴底，但内容高于视口时不会再把顶部推到容器外、滚动条够不到。
-- **v4.2.5 · 修复横向越权（重要）**：登录控制台后，任何**普通账号**都能在浏览器里直接打开 `/instances` 拿到**全部**账号的 openid（含管理员名下的），并可用同一个会话按 `ref` 取到他人（含管理员）的 code —— 因为 `api_shared` 默认开启。根因是上一版的 `requireAPIToken` 把「有效的浏览器会话」当成与 API 令牌等价的凭据放行，却**不把会话身份注入请求上下文**，于是下游 handler 一律按「无会话的公开 API 调用」处理（`isAdminRequest` 恒为 true、`ListSharedAccounts` 不过滤归属）。
-  现改为按**凭据类型**决定权限模型：
-  - **API 令牌** → 公开 API 语义：不做归属过滤，可见性由每个账号的 `api_shared` 开关决定（青龙脚本行为完全不变）；
-  - **浏览器会话** → 控制台语义：管理员全可读，普通用户只能读写归属自己的账号。
+添加腾讯电脑管家、腾讯手游助手、雷电模拟器、QQ浏览器等取码渠道，同一微信号多渠道取码可合并；重构界面。
 
-  具体改动：新增 `browserSessionUser`（会话识别 + 身份注入，`YYB_ALLOW_NO_AUTH` 模式下同样注入，避免退回「人人都看全部」）、`listReadableAccounts`、`resolveReadableAccount`、`defaultAccountFor`、`pickDefaultAccount`；`canReadAccountViaAPI` 改为会话走 `canAccessAccount`、令牌走 `APIShared`；`handleWXCompatInstances`、`nativeCodeWithRef`、`/wxapp/getCode`、`/login` 取码分支全部改走新入口，不再直接调 `db.ListSharedAccounts` / `db.ResolveSharedAccount`。越权请求对会话一律回 `account not found`，不泄露账号是否存在/归属。
-- v4.2.5 · 收窄设备侧接口：新增 `requireTokenOrAdminSession`，`/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 只接受 API 令牌或**管理员**会话。这三条写的是全局 hook 端口表（其端口会被 `deviceEndpoints()` 拼成 `http://127.0.0.1:<port>` 作为取码源），普通用户的会话不应能篡改。未认证 401、普通会话 403、令牌或管理员 200。
-- v4.2.5 · 新增回归测试 `internal/httpapi/security_session_test.go`：普通会话 `/instances` 只能看到自己的账号、管理员与令牌看全部、普通会话不能按 `ref` 取他人 code、`resolveReadableAccount` 按凭据类型判定、无 `ref` 时的默认账号不越界、设备侧接口权限矩阵（含匿名 401 / 普通会话 403 / 管理员 200 / 令牌 200）。
-- 安全加固：公开取码接口由「可选鉴权」改为 **fail-closed**。新增 `internal/httpapi/security.go` 的 `resolveAPIToken`：`YYB_API_TOKEN` 未配置时不再放行，而是优先复用数据库 `app_settings.api_token` 里已有的令牌（跟随数据卷持久化，容器重启/升级不变），没有就生成 256bit 随机令牌并写回 + 打印到启动日志。**只有显式设置 `YYB_ALLOW_NO_AUTH=true` 才会真正关闭鉴权**（启动日志有醒目警告）。
-- 安全加固：`/wxcode/hookcfg`、`/wxcode/config`、`/wxcode/register` 从「始终开放」移入访问令牌保护组。原因是注册接口写入的端口会被 `deviceEndpoints()` 拼成 `http://127.0.0.1:<port>` 去请求，未鉴权时等于对外开放了一个 SSRF / 取码源劫持点。
-- 安全加固：公开注册默认**关闭**（`RegistrationEnabled` 缺省值由 true 改为 false）。新增 `registrationAllowed`：库中还没有任何账号时，仅允许**内网/回环/CGNAT 地址**完成首个管理员注册，公网来源返回 403 并提示改用 `YYB_ADMIN_USER`/`YYB_ADMIN_PASSWORD`；新增 `YYB_ALLOW_REGISTRATION=true` 显式开放公开注册。堵住「实例刚暴露就被陌生人抢注管理员」（首个注册者自动成为 admin）。
-- 安全加固：登录失败限速改为「账号 + 来源 IP」双通道（`loginFailPerUser`=10 / `loginFailPerIP`=8，15 分钟窗口），任一超限即拒绝；计数表加上限（4096）并在满时淘汰过期/最早条目，避免被刷爆内存。
-- 安全加固：`clientIP` 默认**不再信任** `X-Forwarded-For` / `X-Real-IP`（原先无条件采信，攻击者每次换一个伪造 IP 即可完全绕过按 IP 的限速）；新增 `YYB_TRUST_PROXY=true` 供确实部署在反代后面的场景显式开启。
-- 修复一个开放重定向：`safeNext` 原先只挡 `//host`，而按 WHATWG URL 规范浏览器会把路径里的反斜杠规范化为 `/`，因此 `/\evil.com`、`/\/evil.com` 可跳出站外；现一并拒绝反斜杠并剔除控制字符（防止响应头注入）。
-- 会话 Cookie：新增 `cookieSecure`，请求为 HTTPS（直连 TLS 或 `X-Forwarded-Proto: https`）时自动加 `Secure`，仍可用 `YYB_COOKIE_SECURE=true` 强制。
-- 新增回归测试 `internal/httpapi/security_test.go`（令牌自动生成与持久化、`/wxcode/*` 鉴权、注册引导窗口、`safeNext`、`clientIP`、伪造 XFF 下的登录锁定）与 `cmd/yyb-go/main_test.go`（`envBool` 字面量解析，防止环境变量接线漏掉后静默失效）。
+下面是与 **v16**（上一个线上发布版）逐项核对后的差异：功能、接口、变量、设置、数据库。
 
-- 修复普通用户（非管理员）登录后没有实际功能的问题：`/scan`、`/runs`、`/qr`、`/quick-login`、`/accounts` 及账号级 `/api/qinglong/*` 原先统一挂在管理员路由组下，导致点击「添加账号 / 运行管理」都被重定向到个人设置页、也无法扫码添加微信；现改为所有已登录用户可用，仅 `/users`、`/api/auth/users*`、注册开关和 `/api/qinglong/config` 仍限管理员。
-- 新增账号归属（`wechat_accounts.owner_user_id`）：普通用户只能看到并管理自己扫码添加的账号，管理员可见全部；`NULL` 归属的历史账号按管理员名下处理。老库启动时自动补列并建索引，无需手工迁移。
-- 新增账号级「脚本可读」开关（`wechat_accounts.api_shared`，默认开）：公开取码接口 `/login`、`/instances`、`/wxapp/*`、`/wx/*` 不做归属过滤，仍能读到所有账号（含管理员名下的），但会跳过拥有者关闭了该开关的账号，兼顾脚本批量取码与账号隐私。
-- 新增 `PUT /accounts/share` 控制台接口与工作台「脚本可读：开/关」按钮，账号拥有者可单独关闭某个账号的对外读取。
-- 普通用户访问管理员专属页面时改为重定向到工作台 `/`（原先重定向到 `/settings`），接口返回 403；工作台的「用户管理」入口与面板服务器级配置对普通用户隐藏。
-- 修复 `internal/httpapi` 测试因使用 `t.Context()`（需要 go1.24）而无法编译的问题，改为 `context.Background()`；`go vet ./internal/...` 与 `go test ./...` 全部通过。
-- 新增 `build-gateway.sh`：一条命令交叉编译 `gateway/yyb-go-{amd64,arm64}`，替代原先手工执行的 go build。
-- 新增公开接口访问令牌 `YYB_API_TOKEN`（`internal/httpapi/api_token.go`）：配置后 `/login` 取码分支、`/instances`、`/whoami`、`/wxapp/*`、`/wx/*`、`/openapi.json` 需要 `Authorization: Bearer <token>`、`X-API-Token: <token>` 或 `?token=<token>`，也接受有效的控制台登录会话；留空则完全保持旧行为。`/health`、`POST /login`（带 `username` 的控制台登录）、`GET /login` 登录页、`/register`、`/logout`、`/wxcode/*` 始终放行。令牌比较使用 `crypto/subtle` 常量时间函数。
+#### 一、取码渠道：1 条 → 5 条
 
-## 2026-08-26
+| 渠道 | ID | 说明 |
+| --- | --- | --- |
+| 应用宝（YYB） | `appstore` | 原有渠道，仍是默认 |
+| 腾讯电脑管家 | `pcmgr` | 新增 |
+| 腾讯手游助手 | `gameassist` | 新增 |
+| 雷电模拟器 | `ldplayer` | 新增（实验） |
+| QQ浏览器 | `qbbrowser` | 新增 |
 
-- 修复 wxcode 兼容取码在多个原生账号时失败的问题：`GET /login?appId=` 无设备 Hook 回退原生取码时，多账号不再直接报 `multiple native accounts configured`，而是自动选用「存活（alive）优先、其次最近更新」的默认账号，并在响应中返回 `openid` 标明实际账号。
-- `GET /login?appId=wx...&ref=<openid|id>` 支持显式指定原生账号；`POST /login` 的 `ref` 字段行为不变。
+- v16 的扫码链路是单文件 `internal/qr/qr.go`（335 行），没有渠道概念；v17 把它拆成 `qr.go` + `channels.go`，渠道清单由 `qr.ScanChannels()` 统一下发，扫码页、多渠道路径、账号卡片、设置页「扫码渠道」都从同一份清单渲染，新增渠道不用改页面。
+- 账号记录新增 `scan_product`（渠道来源），控制台与接口都能按渠道区分账号。
+- **同一微信号多渠道取码可合并**：`POST /accounts/merge` 把同一 openid 的多条凭据合成一条，保留可用凭据；账号矩阵用 `fleet_primary_id` 标记主账号，配套 `/api/fleet`、`/api/fleet/bind-many`、`/api/fleet/dissolve`。
+- 新增渠道设置与能力探测接口：`GET /api/scan-channels`、`/api/scan-settings`。
 
-## 2026-08-14
+#### 二、控制台界面
 
-- Magisk v0.1.4 修复 Windows 打包导致 `config.conf.example` 使用 CRLF、`PORT` 被解析为 `8000\r` 而无法启动的问题；启动时会自动修复已有持久化配置，并扩大安装包换行检查范围。
-- Magisk 运行时增加可配置 DNS 解析器，默认避开 Android 静态程序无法访问的 `[::1]:53`，修复微信登录二维码域名解析失败。
-- Web 用户与会话默认改用持久化 SQLite，首个注册账号自动成为管理员；支持通过 `YYB_AUTH_DRIVER` 切换 MySQL 或关闭认证，并继续兼容旧的 `YYB_AUTH_MYSQL_DSN`。
-- 微信 HTTPDNS 无响应或缺少 LongLink 候选时，回退到官方 `longcloud.weixin.com:443`，避免在普通 DNS 和 443 端口可用时直接返回 502。
-- `/wx/encryptkey` 改为必须提供目标业务的真实 `payload`，不再发送已知无效的空 `getUserEncryptKey` 请求；同步更新控制台与 OpenAPI。
-- 补充文章会话、文章扩展、点赞和业务 `encryptData` 的调用边界，明确兼容路由不会自动推导业务参数。
+- 新外壳：顶部横幅 + 分组侧栏 + 底部工具栏（移动端抽屉），一级入口为「工作台 / 我的微信账号 / 添加账号 / 运行与日志 / 代理设置」，管理后台分组为「用户管理 / 运行日志」；支持明暗主题与 20 个自绘图标，断点 1279 / 899 / 560。
+- 新增页面：代理设置（`/proxies`）、已激活短链接（`/account-links`）、系统日志（`/logs`）、多账号一次性短链接页（`account-link.html`）；运行管理页拆成「运行与日志」并新增 `logs.html`。
+- 账号列表改为卡片网格 + 账号矩阵视图，新增账号级操作：压缩 ID（`/accounts/compact`）、修复（`/accounts/repair`）、状态裁决（`/accounts/status`，人工确认过期后会摘掉青龙绑定与缓存会话）、账号代理（`/accounts/proxy`、`/accounts/proxy/test`）。
+- 整体视觉收敛（`skin-clean.css`），普通用户界面不出现管理入口。
+- 登录页「版本更新」改为：当前版本（v17）保留一段说明，历史版本（v16 → v2）只列标题，列表超过一屏时在卡片内滚动并带底部渐隐提示。
 
-## 2026-08-13
+#### 三、账号、代理与短链接
 
-- 按管理平台架构统一工作台、添加账号、运行管理、用户管理和个人设置，增加固定侧栏、顶栏、当前用户身份和移动端导航。
-- 用户新增与密码重置改为完整表单对话框，移除浏览器 `prompt` 交互并增加表单内错误反馈。
-- 运行日志改为右侧抽屉，自动刷新时保留当前阅读位置；修复青龙 `/open/logs` 响应超过 2 MB 后被截断并报 `unexpected end of JSON input` 的问题。
-- 将 Nginx Basic Auth 替换为应用内登录页面，增加注册、退出、个人设置、管理员用户管理和角色权限；用户及网页登录会话使用 MySQL，微信协议数据继续使用 SQLite。
-- 网页管理路由使用哈希 Session Cookie 和登录限速；`/wx/*`、`/wxapp/*` 保持兼容，不要求网页登录。
-- 合入 [PR #9](https://github.com/525815266/YYB-Go-Enhanced/pull/9)，增加呆呆面板（daidai-panel）支持、青龙/呆呆统一面板驱动和 GHCR 多架构镜像构建工作流。
-- 修复面板适配引入的青龙兼容问题：青龙任务启停继续以 `isDisabled` 判断，运行状态优先使用青龙 `status`，不会因残留 PID 被误判为运行中。
-- 呆呆面板删除任务失败时不再忽略错误；增加青龙状态兼容测试，并通过全量测试与静态检查。
+- 代理：账号级代理 + 代理档案 `/api/proxy-profiles`（含 `/*path`）、按地区推荐节点 `/api/proxy-location/recommend`，配套 `internal/proxysource`。
+- 一次性短链接：`/account-links`、`/account-link/:token`（含 `/*path`）、`/api/account-links`，令牌用 `YYB_ACCOUNT_LINK_KEY` 加密落库，支持单账号与多账号两种链接。
+- 取码失败诊断：新增 `credential_diagnostics.go`，把电脑管家 / 手游助手 / 雷电 / QQ 浏览器等渠道的类型化拒绝原因归成可公开的结论，不透出凭据、OpenID 与代理认证。
 
-## 2026-08-06
+#### 四、取码防护与节流（全新）
 
-- [7408e0b](https://github.com/525815266/YYB-Go-Enhanced/commit/7408e0b) 将二维码授权加入首页“调用配置”，不选账号也可直接创建授权会话。
-- [7ec2917](https://github.com/525815266/YYB-Go-Enhanced/commit/7ec2917) 新增截图所示的 `/wx/*` 兼容接口：`/wx/code`、`/wx/getuserinfo`、`/wx/encryptkey`、`/wx/getphonenumber`、`/wx/cloud`、`/wx/qrcodeauth`、`/wx/mpgeta8key`、`/wx/appmsgext` 和 `/wx/appmsglike`；其中云函数及文章相关接口复用 `operateWxData`，不会伪造微信结果。
-- [a89cb04](https://github.com/525815266/YYB-Go-Enhanced/commit/a89cb04) 将公众号网页授权并入首页“调用配置”。选择“公众号网页授权”后，可填写公众号 AppID、回调地址、授权范围和 State，并生成官方 OAuth 授权链接。
-- [2e09fc5](https://github.com/525815266/YYB-Go-Enhanced/commit/2e09fc5) 新增 `POST /wx/oauth`，校验公众号 AppID、回调地址和授权参数；不伪造授权 code，用户授权后由回调地址接收 code。
+- 熔断与限速（`circuit.go`、`pacing.go`）：`YYB_CIRCUIT_BREAKER`（默认 `on`）、`YYB_CODE_MIN_GAP`（`3s`）、`YYB_CODE_MAX_WAIT`（`20s`）、`YYB_LOGIN_BUDGET`（`3`）、`YYB_LOGIN_WINDOW`（`10m`）。
+- 这些参数可以在线调，不必重启：`/api/runtime-settings`、`/api/circuit-settings`、`/accounts/circuit-settings`；设置页新增「协议熔断总控」「运行参数」两个区块。环境变量只作为默认值。
+- AppID 黑白名单：`YYB_CODE_DENY_APPIDS` / `YYB_CODE_ALLOW_APPIDS`，接口 `/api/appid-deny`；另有学习型动态拒绝 `YYB_CODE_DYNAMIC_DENY`、`YYB_CODE_DYNAMIC_DENY_THRESHOLD`。
 
-## 2026-08-05
+#### 五、协议与会话
 
-- [c2295cb](https://github.com/525815266/YYB-Go-Enhanced/commit/c2295cb) 增加本机微信快速授权，并保留手机扫码作为回退方式。
+- 新增 H5 取码链路：`POST /wxapp/getH5Code`、`/wx/h5code`、`/wx/getlatestuserkey`（`internal/protocol/h5code.go`）。
+- 新增 autoauth、设备标识、登录预算、失败码恢复：`YYB_DEVICE_IDENTITY`（`stable` 默认 / `random`）、`YYB_ENABLE_PC_LOGIN`（默认 `false`）、`YYB_FRESH_SESSION_WINDOW`、`YYB_APPSTORE_REFRESH_MODE`（`legacy_auth` 默认 / `source`）。
+- `internal/protocol` 由 10 个文件增至 20 个（新增 `autoauth.go`、`device.go`、`h5code.go`、`login_budget.go`、`code_recovery.go`、`local_lab.go`）。
+- 协议令牌 `YYB_PROTOCOL_TOKEN`：与 `YYB_API_TOKEN` 是两道独立闸门，留空即不启用。
 
-## 2026-08-04
+#### 六、面板、集成与通知
 
-- [dc74f47](https://github.com/525815266/YYB-Go-Enhanced/commit/dc74f47) 增加青龙一键同步和账号备注，备注可参与账号任务管理。
-- [f3e4599](https://github.com/525815266/YYB-Go-Enhanced/commit/f3e4599) 增加账号级联删除，清理对应的 YYB 数据、青龙环境变量和专属任务。
+- 青龙：脚本目录统一为 `qinglong/scripts`，新增 `YYB_QINGLONG_REF_MODE`（`id` 默认 / `openid`）、`YYB_QINGLONG_REPO` 显式配置、脚本管理接口 `/api/qinglong/sync-all`（`panel_scripts.go`）。
+- 新增 Arcadia 面板（`panel_arcadia.go`）。
+- 集成接口：`YYB_INTEGRATION_TOKEN` + `/integration/accounts`、`/integration/accounts/proxy`、`/integration/actions/get-code`、`/integration/actions/refresh-account`、`/integration/module-manifest.json`（`integration.go`）。
+- 掉线通知：`YYB_NOTIFY_CHANNEL`（`serverchan` / `pushplus` / `qywx`，留空关闭）、`YYB_NOTIFY_TOKEN`、`YYB_NOTIFY_TOPIC`、`YYB_NOTIFY_ACCOUNT_PUSH`（默认 `true`）。
+- 系统日志：`/logs` + `/api/system-logs`，新增 `internal/eventlog` 落盘事件日志。
 
-## 2026-08-03
+#### 七、版本与镜像
 
-- [47e8fd8](https://github.com/525815266/YYB-Go-Enhanced/commit/47e8fd8) 收录修复后的青龙脚本。
-- [c9fb7e7](https://github.com/525815266/YYB-Go-Enhanced/commit/c9fb7e7) 修复 `wx.login` 返回空 code 时的会话重建逻辑。
+- 新增 `GET /api/version`（`version` / `commit` / `build_date` / `update_url`）与 `/static/version.json`，登录页版本号取自这里。
+- 镜像发到 Docker Hub `chungg/wxcode-yyb-fusion`，构建时把发布号写入镜像（`VERSION` / `ARG VERSION` 两处一致，有测试守着）。
 
-## 2026-07-31
+#### 八、配置变量：16 项 → 40 项（无删除）
 
-- [24a1ae8](https://github.com/525815266/YYB-Go-Enhanced/commit/24a1ae8) 增加账号凭据主动保活和提前续期。
-- [b462dd5](https://github.com/525815266/YYB-Go-Enhanced/commit/b462dd5)、[2e0b691](https://github.com/525815266/YYB-Go-Enhanced/commit/2e0b691)、[75f4461](https://github.com/525815266/YYB-Go-Enhanced/commit/75f4461) 增加青龙账号级任务运行、开关和日志查询，并修复任务状态显示。
-- [afba7fd](https://github.com/525815266/YYB-Go-Enhanced/commit/afba7fd) 修复运行日志刷新时强制跳回顶部的问题，保留当前阅读位置。
+v16 的 16 个 `YYB_*` 全部保留且默认值不变，新增 24 项：
 
-## 2026-07-30
+| 分组 | 变量 | 默认值 |
+| --- | --- | --- |
+| 注册邮箱 | `YYB_SMTP_HOST` / `YYB_SMTP_PORT` / `YYB_SMTP_USERNAME` / `YYB_SMTP_PASSWORD` / `YYB_SMTP_FROM` | 留空 = 不启用 |
+| 注册邮箱 | `YYB_SMTP_TLS` | `true` |
+| 令牌 | `YYB_PROTOCOL_TOKEN` | 留空 = 不启用 |
+| 令牌 | `YYB_INTEGRATION_TOKEN` | 留空 = 不启用 |
+| 青龙 | `YYB_QINGLONG_REF_MODE` | `id` |
+| 青龙 | `YYB_QINGLONG_REPO` | 留空 |
+| 协议 | `YYB_ENABLE_PC_LOGIN` | `false` |
+| 协议 | `YYB_DEVICE_IDENTITY` | `stable` |
+| 协议 | `YYB_APPSTORE_REFRESH_MODE` | `legacy_auth` |
+| 通知 | `YYB_NOTIFY_CHANNEL` / `YYB_NOTIFY_TOKEN` / `YYB_NOTIFY_TOPIC` | 留空 = 关闭 |
+| 通知 | `YYB_NOTIFY_ACCOUNT_PUSH` | `true` |
+| 防护 | `YYB_CIRCUIT_BREAKER` | `on` |
+| 防护 | `YYB_CODE_MIN_GAP` / `YYB_CODE_MAX_WAIT` | `3s` / `20s` |
+| 防护 | `YYB_LOGIN_BUDGET` / `YYB_LOGIN_WINDOW` | `3` / `10m` |
+| 防护 | `YYB_CODE_DENY_APPIDS` / `YYB_CODE_ALLOW_APPIDS` | 留空 |
 
-- [a0cb5bb](https://github.com/525815266/YYB-Go-Enhanced/commit/a0cb5bb) 发布增强版基础功能：微信扫码登录、账号与 OpenID 管理、`wx.login` code 获取、SQLite 持久化、Docker 部署和青龙接入。
+另有 8 项只在源码编排（`src/.env.example`）里出现，容器部署可以不设：`YYB_ACCOUNT_LINK_KEY`、`YYB_CODE_DYNAMIC_DENY`、`YYB_CODE_DYNAMIC_DENY_THRESHOLD`、`YYB_DOCKER_NETWORK`、`YYB_IMAGE`、`YYB_UPDATE_PROXY`、`YYB_UPDATE_VERSION_URL`、`YYB_FRESH_SESSION_WINDOW`。
 
-## 当前边界
+#### 九、接口：57 → 95 条（新增 38 条，无删除）
 
-公众号功能是网页 OAuth 授权链接生成，不是微信公众号后台登录。公众号后台需要其官方管理员登录；OAuth 授权成功后的 `code` 会回调到公众号后台配置的授权域名。
+v16 的 57 条路由全部保留，新增：
+
+- 渠道与扫码：`/api/scan-channels`、`/api/scan-settings`
+- 账号整理：`/accounts/compact`、`/accounts/repair`、`/accounts/status`、`/accounts/merge`
+- 账号代理：`/accounts/proxy`、`/accounts/proxy/test`、`/api/proxy-profiles`、`/api/proxy-profiles/*path`、`/api/proxy-location/recommend`
+- 账号矩阵：`/api/fleet`、`/api/fleet/bind-many`、`/api/fleet/dissolve`
+- 短链接：`/account-links`、`/account-link/:token`、`/account-link/:token/*path`、`/api/account-links`、`/api/account-links/*path`
+- 防护与运行时设置：`/accounts/circuit-settings`、`/api/circuit-settings`、`/api/runtime-settings`、`/api/appid-deny`
+- 协议：`/wx/h5code`、`/wx/getlatestuserkey`、`/wxapp/getH5Code`、`/api/qbbrowser/token`
+- 日志：`/logs`、`/api/system-logs`
+- 集成：`/integration/accounts`、`/integration/accounts/proxy`、`/integration/actions/get-code`、`/integration/actions/refresh-account`、`/integration/module-manifest.json`
+- 面板：`/api/qinglong/sync-all`
+- 页面与元信息：`/proxies`、`/api/version`、`/healthz`
+
+#### 十、数据结构与升级注意
+
+- 新增 `scan_product`、`fleet_primary_id` 两个账号字段；账号 JSON 不再返回 `owner_user_id`（归属改为 auth 库的 `account_owners` 表，用 `AccountOwner` 反查；`runs` 里的任务对象仍带 `owner_user_id`）。
+- 老库升级会自动补 `wechat_accounts.api_shared` 列（默认 1，脚本可读），不需要手工迁移。
+- **升级注意**：v16 把账号归属存在 `wechat_accounts.owner_user_id`，v17 改为 auth 库 `account_owners`，且没有针对老列的自动迁移。用 v16 的数据目录直接升级时，老账号在新库里没有归属记录 —— 管理员仍能看到和管理，普通用户看不到。恢复办法：用原账号重新扫一次（`ClaimAccount` 会把已有账号绑回当前用户），或由管理员代管。
+- 删除 `internal/httpapi/fusion.go.bak`、`fusion.go.bak_autoadapt`、`fusion.go.bak_v41` 三个历史备份文件。
+
+#### 十一、规模变化（同一仓库口径）
+
+| 指标 | v16 | v17 |
+| --- | --- | --- |
+| Go 文件 | 65 | 254 |
+| 业务代码行 | 14,287 | 31,178 |
+| 测试代码行 | 5,301 | 23,953 |
+| internal 包 | 6 | 13 |
+| httpapi 业务文件 | 46 | 125 |
+| 页面模板 | 7 | 11 |
+| 前端 JS / CSS | 1 / 2 | 7 / 7 |
+| 青龙脚本 | 13 | 212 |
+| 文档 | 0 | 59 |
+| HTTP 路由 | 57 | 95 |
+| 配置变量 | 16 | 40 |

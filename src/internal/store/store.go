@@ -6,14 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"yyb_go/internal/qbbrowser"
+
 	_ "modernc.org/sqlite"
 )
+
+var ErrQQBrowserBridgeDowngrade = errors.New("QQBrowser standalone authorization cannot be replaced by a browser token push")
 
 const schema = `
 CREATE TABLE IF NOT EXISTS wechat_accounts (
@@ -28,15 +33,11 @@ CREATE TABLE IF NOT EXISTS wechat_accounts (
     login_buffer    TEXT    NOT NULL,
     credentials     TEXT,
     status          TEXT,
-    owner_user_id   INTEGER,
-    api_shared      INTEGER NOT NULL DEFAULT 1,
     last_checked_at INTEGER,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_wxacc_uin ON wechat_accounts(uin);
--- idx_wxacc_owner 由 migrateAccountOwnership 在补列之后再建
--- （老库先跑 schema 时 owner_user_id 还不存在，直接建索引会报 no such column）
 
 CREATE TABLE IF NOT EXISTS sessions (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +51,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     UNIQUE(wechat_account_id, tcp_proxy)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- 下游定制：「登录账号级」定时任务（见 internal/httpapi/runs.go）。
+CREATE TABLE IF NOT EXISTS user_script_jobs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_user_id     INTEGER NOT NULL,
+    script_key        TEXT    NOT NULL,
+    ql_cron_id        INTEGER NOT NULL,
+    schedule          TEXT    NOT NULL,
+    anchor_account_id INTEGER NOT NULL DEFAULT 0,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    UNIQUE(owner_user_id, script_key)
+);
+CREATE INDEX IF NOT EXISTS idx_user_script_jobs_owner ON user_script_jobs(owner_user_id);
 
 CREATE TABLE IF NOT EXISTS features (
     code        INTEGER PRIMARY KEY,
@@ -70,23 +85,6 @@ CREATE TABLE IF NOT EXISTS account_script_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_account_script_jobs_account ON account_script_jobs(account_id);
 
--- user_script_jobs 是「登录账号级」的定时任务：一个网关登录账号 + 一个脚本只建一条任务，
--- 跑该登录账号名下的全部 code 账号（account_script_jobs 仍然保留，用来记录「手动运行」
--- 用的单账号任务）。owner_user_id=0 表示账号没有归属（历史数据/未启用鉴权时创建），
--- 统一按管理员名下处理。
-CREATE TABLE IF NOT EXISTS user_script_jobs (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_user_id     INTEGER NOT NULL,
-    script_key        TEXT    NOT NULL,
-    ql_cron_id        INTEGER NOT NULL,
-    schedule          TEXT    NOT NULL,
-    anchor_account_id INTEGER NOT NULL DEFAULT 0,
-    created_at        INTEGER NOT NULL,
-    updated_at        INTEGER NOT NULL,
-    UNIQUE(owner_user_id, script_key)
-);
-CREATE INDEX IF NOT EXISTS idx_user_script_jobs_owner ON user_script_jobs(owner_user_id);
-
 CREATE TABLE IF NOT EXISTS account_push_settings (
     account_id     INTEGER PRIMARY KEY REFERENCES wechat_accounts(id) ON DELETE CASCADE,
     channel        TEXT    NOT NULL DEFAULT 'none',
@@ -96,10 +94,66 @@ CREATE TABLE IF NOT EXISTS account_push_settings (
     updated_at     INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS proxy_provider_profiles (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL UNIQUE,
+    provider   TEXT    NOT NULL DEFAULT 'ipzan',
+    proxy_type TEXT    NOT NULL DEFAULT 'http',
+    api_url    TEXT    NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_proxy_settings (
+    account_id             INTEGER PRIMARY KEY REFERENCES wechat_accounts(id) ON DELETE CASCADE,
+    mode                   TEXT    NOT NULL DEFAULT 'direct',
+    proxy_type             TEXT    NOT NULL DEFAULT 'http',
+    static_proxy           TEXT    NOT NULL DEFAULT '',
+    api_url                TEXT    NOT NULL DEFAULT '',
+    provider_profile_id    INTEGER,
+    region_code            TEXT    NOT NULL DEFAULT '',
+    region_province        TEXT    NOT NULL DEFAULT '',
+    region_city            TEXT    NOT NULL DEFAULT '',
+    refresh_ahead_seconds  INTEGER NOT NULL DEFAULT 300,
+    protocol_proxy_mode    TEXT    NOT NULL DEFAULT 'account',
+    created_at             INTEGER NOT NULL,
+    updated_at             INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
     updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_circuit_settings (
+    account_id INTEGER PRIMARY KEY REFERENCES wechat_accounts(id) ON DELETE CASCADE,
+    enabled INTEGER NOT NULL CHECK(enabled IN (0,1))
+);
+
+CREATE TABLE IF NOT EXISTS account_links (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash      TEXT    NOT NULL UNIQUE,
+    kind            TEXT    NOT NULL,
+    account_id      INTEGER NOT NULL REFERENCES wechat_accounts(id) ON DELETE CASCADE,
+    owner_user_id   INTEGER,
+    expected_openid TEXT    NOT NULL DEFAULT '',
+    token_ciphertext TEXT   NOT NULL DEFAULT '',
+    target_product TEXT    NOT NULL DEFAULT '',
+    switch_confirmed INTEGER NOT NULL DEFAULT 0,
+    allow_multi_channel INTEGER NOT NULL DEFAULT 0,
+    multi_primary_id INTEGER REFERENCES wechat_accounts(id) ON DELETE CASCADE,
+    expires_at      INTEGER NOT NULL,
+    used_at         INTEGER,
+    revoked_at      INTEGER,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_account_links_expires ON account_links(expires_at);
+CREATE TABLE IF NOT EXISTS account_link_scans (
+    link_id INTEGER NOT NULL REFERENCES account_links(id) ON DELETE CASCADE,
+    product TEXT NOT NULL,
+    account_id INTEGER NOT NULL REFERENCES wechat_accounts(id) ON DELETE CASCADE,
+    PRIMARY KEY(link_id, product)
 );
 `
 
@@ -114,41 +168,46 @@ type DB struct {
 }
 
 type WechatAccount struct {
-	ID          int64          `json:"id"`
-	OpenID      string         `json:"openid"`
-	UIN         *int64         `json:"uin,omitempty"`
-	Alias       *string        `json:"alias,omitempty"`
-	Nickname    *string        `json:"nickname,omitempty"`
-	Remark      *string        `json:"remark,omitempty"`
-	Avatar      *string        `json:"avatar,omitempty"`
-	UserInfo    map[string]any `json:"user_info,omitempty"`
-	LoginBuffer string         `json:"login_buffer,omitempty"`
-	Credentials map[string]any `json:"credentials,omitempty"`
-	Status      *string        `json:"status,omitempty"`
-	// OwnerUserID 为账号归属的控制台用户；NULL 表示未归属（老数据/未启用鉴权时创建），
-	// 只有管理员可见可管。
-	OwnerUserID *int64 `json:"owner_user_id,omitempty"`
-	// APIShared 为是否允许无会话的脚本/API（/instances、/wxapp/* 等）读取本账号，默认允许。
-	APIShared     bool   `json:"api_shared"`
-	LastCheckedAt *int64 `json:"last_checked_at,omitempty"`
-	CreatedAt     int64  `json:"created_at"`
-	UpdatedAt     int64  `json:"updated_at"`
+	ID             int64          `json:"id"`
+	OpenID         string         `json:"openid"`
+	UIN            *int64         `json:"uin,omitempty"`
+	Alias          *string        `json:"alias,omitempty"`
+	Nickname       *string        `json:"nickname,omitempty"`
+	Remark         *string        `json:"remark,omitempty"`
+	Avatar         *string        `json:"avatar,omitempty"`
+	UserInfo       map[string]any `json:"user_info,omitempty"`
+	LoginBuffer    string         `json:"login_buffer,omitempty"`
+	Credentials    map[string]any `json:"credentials,omitempty"`
+	Status         *string        `json:"status,omitempty"`
+	LastCheckedAt  *int64         `json:"last_checked_at,omitempty"`
+	FleetPrimaryID *int64         `json:"fleet_primary_id,omitempty"`
+	// APIShared 是下游定制：该账号是否允许脚本/公开 API 读取（api_shared，默认开）。
+	APIShared      bool  `json:"api_shared"`
+	CreatedAt      int64 `json:"created_at"`
+	UpdatedAt      int64 `json:"updated_at"`
+	credentialJSON sql.NullString
 }
 
 type AccountPublic struct {
-	ID            int64   `json:"id"`
-	OpenID        string  `json:"openid"`
-	UIN           *int64  `json:"uin"`
-	Alias         *string `json:"alias"`
-	Nickname      *string `json:"nickname"`
-	Remark        *string `json:"remark"`
-	Avatar        *string `json:"avatar"`
-	Status        *string `json:"status"`
-	OwnerUserID   *int64  `json:"owner_user_id"`
-	APIShared     bool    `json:"api_shared"`
-	LastCheckedAt *int64  `json:"last_checked_at"`
-	CreatedAt     int64   `json:"created_at"`
-	UpdatedAt     int64   `json:"updated_at"`
+	ScanProduct            string  `json:"scan_product"`
+	FleetPrimaryID         *int64  `json:"fleet_primary_id"`
+	ID                     int64   `json:"id"`
+	OpenID                 string  `json:"openid"`
+	UIN                    *int64  `json:"uin"`
+	Alias                  *string `json:"alias"`
+	Nickname               *string `json:"nickname"`
+	Remark                 *string `json:"remark"`
+	Avatar                 *string `json:"avatar"`
+	Status                 *string `json:"status"`
+	RefreshTokenObservedAt *int64  `json:"refresh_token_observed_at,omitempty"`
+	CredentialExpiresAt    *int64  `json:"credential_expires_at,omitempty"`
+	CredentialExpiresIn    int64   `json:"credential_expires_in,omitempty"`
+	// APIShared 下游定制：脚本可读开关，控制台账号列表据此渲染开关。
+	APIShared         bool   `json:"api_shared"`
+	RescanRecommended bool   `json:"rescan_recommended"`
+	LastCheckedAt     *int64 `json:"last_checked_at"`
+	CreatedAt         int64  `json:"created_at"`
+	UpdatedAt         int64  `json:"updated_at"`
 }
 
 type SessionRow struct {
@@ -160,6 +219,7 @@ type SessionRow struct {
 	ExpiresAt       int64
 	CreatedAt       int64
 	UpdatedAt       int64
+	blobJSON        string
 }
 
 type Feature struct {
@@ -204,7 +264,20 @@ func Open(path string) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err = migrateAccountOwnership(ctx, db); err != nil {
+	if err = migrateAccountProxySettings(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err = migrateAccountLinks(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err = migrateAccountFleet(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// 下游定制：账号的脚本可读开关（api_shared，默认开）。
+	if err = migrateAccountShare(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -216,11 +289,52 @@ func Open(path string) (*DB, error) {
 	return out, nil
 }
 
+func migrateAccountLinks(ctx context.Context, db *sql.DB) error {
+	for _, column := range []struct{ name, definition string }{
+		{"token_ciphertext", "TEXT NOT NULL DEFAULT ''"},
+		{"revoked_at", "INTEGER"},
+		{"target_product", "TEXT NOT NULL DEFAULT ''"},
+		{"switch_confirmed", "INTEGER NOT NULL DEFAULT 0"},
+		{"allow_multi_channel", "INTEGER NOT NULL DEFAULT 0"},
+		{"multi_primary_id", "INTEGER REFERENCES wechat_accounts(id) ON DELETE CASCADE"},
+	} {
+		exists, err := sqliteColumnExists(ctx, db, "account_links", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err = db.ExecContext(ctx, "ALTER TABLE account_links ADD COLUMN "+column.name+" "+column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (db *DB) Close() error {
 	if db == nil || db.sql == nil {
 		return nil
 	}
-	return db.sql.Close()
+	err := db.sql.Close()
+	if db.sql.Stats().OpenConnections == 0 {
+		return err
+	}
+	// sql.DB.Close stops new queries but does not wait for an in-flight
+	// connection opener. SQLite may still create/remove WAL files in that
+	// interval, so callers must not remove the data directory yet.
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+	for db.sql.Stats().OpenConnections != 0 {
+		select {
+		case <-ticker.C:
+		case <-timeout.C:
+			return errors.Join(err, errors.New("database close: pending connections did not stop within 5s"))
+		}
+	}
+	return err
 }
 
 func (db *DB) EnsureDefaultFeatures(ctx context.Context) error {
@@ -296,23 +410,8 @@ func migrateAccountRemark(ctx context.Context, db *sql.DB) error {
 	return err
 }
 
-// migrateAccountOwnership 为老库补上账号归属（owner_user_id）与对外共享开关（api_shared）。
-// 老数据 owner_user_id 为 NULL，表示未归属（等同管理员名下），普通用户看不到。
-func migrateAccountOwnership(ctx context.Context, db *sql.DB) error {
-	if err := ensureColumn(ctx, db, "wechat_accounts", "owner_user_id",
-		"ALTER TABLE wechat_accounts ADD COLUMN owner_user_id INTEGER"); err != nil {
-		return err
-	}
-	if err := ensureColumn(ctx, db, "wechat_accounts", "api_shared",
-		"ALTER TABLE wechat_accounts ADD COLUMN api_shared INTEGER NOT NULL DEFAULT 1"); err != nil {
-		return err
-	}
-	_, err := db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_wxacc_owner ON wechat_accounts(owner_user_id)")
-	return err
-}
-
-func ensureColumn(ctx context.Context, db *sql.DB, table, column, ddl string) error {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+func migrateAccountFleet(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(wechat_accounts)")
 	if err != nil {
 		return err
 	}
@@ -324,20 +423,83 @@ func ensureColumn(ctx context.Context, db *sql.DB, table, column, ddl string) er
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			return err
 		}
-		if name == column {
+		if name == "fleet_primary_id" {
 			return nil
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = db.ExecContext(ctx, ddl)
+	_, err = db.ExecContext(ctx, "ALTER TABLE wechat_accounts ADD COLUMN fleet_primary_id INTEGER")
 	return err
 }
 
-// UpsertAccount 写入/更新账号。ownerUserID 为账号归属用户（nil 表示不改变已有归属）；
-// 已有归属的账号在新扫描者带 ownerUserID 时归新扫描者所有（同一个人重新扫码即刷新归属）。
-func (db *DB) UpsertAccount(ctx context.Context, openid, loginBuffer string, alias, nickname, avatar *string, userInfo map[string]any, credentials map[string]any, status *string, ownerUserID *int64) (*WechatAccount, error) {
+// migrateAccountShare 给老库补上 api_shared 列（下游定制）。
+// 默认 1（允许脚本读取），与历史行为一致：升级后既有青龙脚本不会突然取不到码。
+func migrateAccountShare(ctx context.Context, db *sql.DB) error {
+	exists, err := sqliteColumnExists(ctx, db, "wechat_accounts", "api_shared")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, "ALTER TABLE wechat_accounts ADD COLUMN api_shared INTEGER NOT NULL DEFAULT 1")
+	return err
+}
+
+func migrateAccountProxySettings(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"provider_profile_id", "INTEGER"},
+		{"region_code", "TEXT NOT NULL DEFAULT ''"},
+		{"region_province", "TEXT NOT NULL DEFAULT ''"},
+		{"region_city", "TEXT NOT NULL DEFAULT ''"},
+		{"refresh_ahead_seconds", "INTEGER NOT NULL DEFAULT 300"},
+		{"protocol_proxy_mode", "TEXT NOT NULL DEFAULT 'account'"},
+	}
+	for _, column := range columns {
+		exists, err := sqliteColumnExists(ctx, db, "account_proxy_settings", column.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err = db.ExecContext(ctx, "ALTER TABLE account_proxy_settings ADD COLUMN "+column.name+" "+column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sqliteColumnExists(ctx context.Context, db *sql.DB, table, wanted string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == wanted {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (db *DB) UpsertAccount(ctx context.Context, openid, loginBuffer string, alias, nickname, avatar *string, userInfo map[string]any, credentials map[string]any, status *string) (*WechatAccount, error) {
+	openid = strings.TrimSpace(openid)
+	if openid == "" {
+		return nil, errors.New("openid is required")
+	}
 	now := time.Now().Unix()
 	userJSON, err := marshalNullable(userInfo)
 	if err != nil {
@@ -347,20 +509,78 @@ func (db *DB) UpsertAccount(ctx context.Context, openid, loginBuffer string, ali
 	if err != nil {
 		return nil, err
 	}
-	_, err = db.sql.ExecContext(ctx,
-		`INSERT INTO wechat_accounts
-		(openid, login_buffer, alias, nickname, avatar, user_info, credentials, status, owner_user_id, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(openid) DO UPDATE SET
-		login_buffer=excluded.login_buffer, alias=excluded.alias, nickname=excluded.nickname,
-		avatar=excluded.avatar, user_info=excluded.user_info, credentials=excluded.credentials,
-		status=excluded.status, updated_at=excluded.updated_at,
-		owner_user_id=CASE WHEN excluded.owner_user_id IS NULL
-			THEN wechat_accounts.owner_user_id ELSE excluded.owner_user_id END`,
-		openid, loginBuffer, nullableString(alias), nullableString(nickname), nullableString(avatar),
-		userJSON, credJSON, nullableString(status), nullableInt(ownerUserID), now, now,
-	)
+	// Keep the lookup, lowest-free-ID calculation and write in one transaction.
+	// Otherwise two simultaneous successful scans can both select the same gap.
+	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Reuse the lowest free account slot. This keeps a single account at ID 1
+	// after it is deleted and scanned again, while preserving existing IDs.
+	var existingID int64
+	var previousCredentials sql.NullString
+	err = tx.QueryRowContext(ctx, "SELECT id,credentials FROM wechat_accounts WHERE openid=?", openid).Scan(&existingID, &previousCredentials)
+	if err == nil {
+		if credentials["provider"] == "qbbrowser" {
+			var previous, incoming struct {
+				Provider string                `json:"provider"`
+				QQ       qbbrowser.Credentials `json:"qbbrowser"`
+			}
+			_ = json.Unmarshal([]byte(previousCredentials.String), &previous)
+			_ = json.Unmarshal([]byte(credJSON.String), &incoming)
+			// An extension left running must not erase the standalone refresh
+			// chain. Check inside the write transaction to cover concurrent scans.
+			if previous.Provider == "qbbrowser" && previous.QQ.CanRefresh() && !incoming.QQ.CanRefresh() {
+				return nil, ErrQQBrowserBridgeDowngrade
+			}
+		}
+		_, err = tx.ExecContext(ctx,
+			`UPDATE wechat_accounts SET login_buffer=?, alias=?, nickname=?, avatar=?, user_info=?, credentials=?, status=?, updated_at=? WHERE id=?`,
+			loginBuffer, nullableString(alias), nullableString(nickname), nullableString(avatar),
+			userJSON, credJSON, nullableString(status), now, existingID,
+		)
+	} else if errors.Is(err, sql.ErrNoRows) {
+		rows, queryErr := tx.QueryContext(ctx, "SELECT id FROM wechat_accounts ORDER BY id")
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		nextID := int64(1)
+		for rows.Next() {
+			var id int64
+			if scanErr := rows.Scan(&id); scanErr != nil {
+				_ = rows.Close()
+				return nil, scanErr
+			}
+			if id < nextID {
+				continue
+			}
+			if id == nextID {
+				nextID++
+				continue
+			}
+			break
+		}
+		if queryErr = rows.Err(); queryErr != nil {
+			_ = rows.Close()
+			return nil, queryErr
+		}
+		_ = rows.Close()
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO wechat_accounts
+			(id, openid, login_buffer, alias, nickname, avatar, user_info, credentials, status, created_at, updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			nextID, openid, loginBuffer, nullableString(alias), nullableString(nickname), nullableString(avatar),
+			userJSON, credJSON, nullableString(status), now, now,
+		)
+	} else {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
 	return db.GetAccountByOpenID(ctx, openid)
@@ -394,6 +614,39 @@ func (db *DB) ResolveAccount(ctx context.Context, ref string) (*WechatAccount, e
 	return db.GetAccountByOpenID(ctx, ref)
 }
 
+// SetAccountFleet binds an account into the fleet rooted at primaryID.
+// primaryID 0 unbinds. A primary anchors its own fleet by self-binding:
+// without the self-reference, requests aimed at the primary would never
+// dispatch to the members.
+func (db *DB) SetAccountFleet(ctx context.Context, accountID, primaryID int64) error {
+	var target *int64
+	if primaryID > 0 {
+		target = &primaryID
+	}
+	_, err := db.sql.ExecContext(ctx, "UPDATE wechat_accounts SET fleet_primary_id=?, updated_at=? WHERE id=?",
+		target, time.Now().Unix(), accountID)
+	return err
+}
+
+// FleetMembers returns the fleet rooted at primaryID (the primary itself
+// plus every account bound to it), oldest id first for stable ordering.
+func (db *DB) FleetMembers(ctx context.Context, primaryID int64) ([]*WechatAccount, error) {
+	rows, err := db.sql.QueryContext(ctx, selectAccountSQL+" WHERE id=? OR fleet_primary_id=? ORDER BY id", primaryID, primaryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*WechatAccount, 0, 3)
+	for rows.Next() {
+		acc, err := scanAccountRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, acc)
+	}
+	return out, rows.Err()
+}
+
 func (db *DB) ListAccounts(ctx context.Context) ([]*WechatAccount, error) {
 	rows, err := db.sql.QueryContext(ctx, selectAccountSQL+" ORDER BY id")
 	if err != nil {
@@ -411,59 +664,12 @@ func (db *DB) ListAccounts(ctx context.Context) ([]*WechatAccount, error) {
 	return out, rows.Err()
 }
 
-// ListAccountsOwnedBy 返回归属指定用户的账号（普通用户控制台只能看到这些）
-func (db *DB) ListAccountsOwnedBy(ctx context.Context, ownerUserID int64) ([]*WechatAccount, error) {
-	rows, err := db.sql.QueryContext(ctx, selectAccountSQL+" WHERE owner_user_id=? ORDER BY id", ownerUserID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*WechatAccount
-	for rows.Next() {
-		acc, err := scanAccountRows(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, acc)
-	}
-	return out, rows.Err()
-}
+// ErrAccountNotShared 表示账号已关闭脚本读取（api_shared=false，下游定制）。
+var ErrAccountNotShared = errors.New("account is not shared with the automation API")
 
-// ListAccountsByOwnerKey 按「登录账号」取账号：ownerKey=0 表示未归属账号（owner_user_id 为空），
-// 其余按 owner_user_id 精确匹配。登录账号级定时任务用它算出要跑哪些 code 账号。
-func (db *DB) ListAccountsByOwnerKey(ctx context.Context, ownerKey int64) ([]*WechatAccount, error) {
-	if ownerKey <= 0 {
-		rows, err := db.sql.QueryContext(ctx, selectAccountSQL+" WHERE owner_user_id IS NULL ORDER BY id")
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		var out []*WechatAccount
-		for rows.Next() {
-			acc, err := scanAccountRows(rows)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, acc)
-		}
-		return out, rows.Err()
-	}
-	return db.ListAccountsOwnedBy(ctx, ownerKey)
-}
-
-// ListAccountsVisibleTo 返回控制台可见账号：all=true（管理员/未启用鉴权）返回全部，
-// 否则只返回归属该用户的账号。
-func (db *DB) ListAccountsVisibleTo(ctx context.Context, ownerUserID int64, all bool) ([]*WechatAccount, error) {
-	if all {
-		return db.ListAccounts(ctx)
-	}
-	return db.ListAccountsOwnedBy(ctx, ownerUserID)
-}
-
-// ListSharedAccounts 返回允许脚本/API 读取的账号（api_shared=1），供 /instances、
-// 默认账号选择、保活等无会话路径使用。
+// ListSharedAccounts 返回允许脚本读取（api_shared=1）的账号，供令牌通道使用。
 func (db *DB) ListSharedAccounts(ctx context.Context) ([]*WechatAccount, error) {
-	rows, err := db.sql.QueryContext(ctx, selectAccountSQL+" WHERE COALESCE(api_shared,1)<>0 ORDER BY id")
+	rows, err := db.sql.QueryContext(ctx, selectAccountSQL+" WHERE api_shared=1 ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -479,41 +685,193 @@ func (db *DB) ListSharedAccounts(ctx context.Context) ([]*WechatAccount, error) 
 	return out, rows.Err()
 }
 
-// ErrAccountNotShared 表示账号存在但拥有者已关闭“允许脚本读取”。
-var ErrAccountNotShared = errors.New("account not shared to api")
-
-// ResolveSharedAccount 按 ref 解析账号，并要求该账号允许脚本/API 读取。
-func (db *DB) ResolveSharedAccount(ctx context.Context, ref string) (*WechatAccount, error) {
-	acc, err := db.ResolveAccount(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	if !acc.APIShared {
-		return nil, ErrAccountNotShared
-	}
-	return acc, nil
-}
-
-// SetAccountShare 设置账号是否允许脚本/API 读取。
+// SetAccountShare 开关某个账号的脚本可读（api_shared）状态。
 func (db *DB) SetAccountShare(ctx context.Context, id int64, shared bool) error {
 	value := 0
 	if shared {
 		value = 1
 	}
-	_, err := db.sql.ExecContext(ctx,
-		"UPDATE wechat_accounts SET api_shared=?, updated_at=? WHERE id=?",
-		value, time.Now().Unix(), id,
-	)
+	_, err := db.sql.ExecContext(ctx, "UPDATE wechat_accounts SET api_shared=?, updated_at=? WHERE id=?", value, time.Now().Unix(), id)
 	return err
 }
 
-// SetAccountOwner 设置账号归属（nil 表示收归管理员/未归属）。
-func (db *DB) SetAccountOwner(ctx context.Context, id int64, ownerUserID *int64) error {
-	_, err := db.sql.ExecContext(ctx,
-		"UPDATE wechat_accounts SET owner_user_id=?, updated_at=? WHERE id=?",
-		nullableInt(ownerUserID), time.Now().Unix(), id,
-	)
-	return err
+// IsIncomplete reports the narrow class of records that can only have come
+// from an interrupted/legacy scan. An account with credentials, or one that
+// was explicitly marked alive/expired, is always protected from cleanup.
+func (a *WechatAccount) IsIncomplete() bool {
+	if a == nil || strings.TrimSpace(a.OpenID) == "" {
+		return true
+	}
+	status := ""
+	if a.Status != nil {
+		status = strings.ToLower(strings.TrimSpace(*a.Status))
+	}
+	if status == "alive" || status == "expired" {
+		return false
+	}
+	return strings.TrimSpace(a.LoginBuffer) == "" && len(a.Credentials) == 0
+}
+
+// ListIncompleteAccounts returns only conservative cleanup candidates. It is
+// intentionally separate from ListAccounts so normal account APIs never hide
+// a record merely because its credentials are currently unavailable.
+func (db *DB) ListIncompleteAccounts(ctx context.Context) ([]*WechatAccount, error) {
+	accounts, err := db.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*WechatAccount, 0)
+	for _, account := range accounts {
+		if account.IsIncomplete() {
+			out = append(out, account)
+		}
+	}
+	return out, nil
+}
+
+// DeleteIncompleteAccounts deletes only IDs that are still incomplete at the
+// time of the delete. Re-reading inside the transaction prevents a successful
+// scan that reused the same ID between preview and confirmation from being
+// accidentally removed.
+func (db *DB) DeleteIncompleteAccounts(ctx context.Context, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return []int64{}, nil
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	removed := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		account, scanErr := scanAccountRows(tx.QueryRowContext(ctx, selectAccountSQL+" WHERE id=?", id))
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			continue
+		}
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		if !account.IsIncomplete() {
+			continue
+		}
+		deleted, deleteErr := deleteAccountRow(ctx, tx, id)
+		if deleteErr != nil {
+			return nil, deleteErr
+		}
+		if deleted {
+			removed = append(removed, id)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return removed, nil
+}
+
+// CompactAccountIDs moves existing accounts into the lowest contiguous IDs,
+// preserving their current order. All YYB-owned child tables are remapped in
+// the same transaction. The caller is responsible for remapping account
+// ownership kept in the separate auth database.
+func (db *DB) CompactAccountIDs(ctx context.Context) (map[int64]int64, error) {
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Foreign keys are checked at commit, allowing the parent and child IDs to
+	// be moved through a collision-free temporary namespace.
+	if _, err = tx.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM wechat_accounts ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	var oldIDs []int64
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		oldIDs = append(oldIDs, id)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+	mapping := make(map[int64]int64, len(oldIDs))
+	for index, oldID := range oldIDs {
+		newID := int64(index + 1)
+		if oldID != newID {
+			mapping[oldID] = newID
+		}
+	}
+	if len(mapping) == 0 {
+		return map[int64]int64{}, tx.Commit()
+	}
+	// Move every affected parent row to a negative temporary ID first. IDs are
+	// positive in normal operation, so this namespace cannot collide.
+	for oldID := range mapping {
+		if _, err = tx.ExecContext(ctx, "UPDATE wechat_accounts SET id=? WHERE id=?", -oldID, oldID); err != nil {
+			return nil, err
+		}
+	}
+	childTables := []struct{ table, column string }{
+		{"sessions", "wechat_account_id"},
+		{"account_script_jobs", "account_id"},
+		{"account_push_settings", "account_id"},
+		{"account_proxy_settings", "account_id"},
+		{"account_circuit_settings", "account_id"},
+		{"account_links", "account_id"},
+		{"account_links", "multi_primary_id"},
+		{"account_link_scans", "account_id"},
+	}
+	for oldID := range mapping {
+		// Fleets point at their primary by ID, so the pointer moves with it.
+		if _, err = tx.ExecContext(ctx, "UPDATE wechat_accounts SET fleet_primary_id=? WHERE fleet_primary_id=?", -oldID, oldID); err != nil {
+			return nil, err
+		}
+		for _, child := range childTables {
+			if _, err = tx.ExecContext(ctx, "UPDATE "+child.table+" SET "+child.column+"=? WHERE "+child.column+"=?", -oldID, oldID); err != nil {
+				return nil, err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE app_settings SET key=? WHERE key=?", accountReferenceKey(-oldID), accountReferenceKey(oldID)); err != nil {
+			return nil, err
+		}
+	}
+	for oldID, newID := range mapping {
+		if _, err = tx.ExecContext(ctx, "UPDATE wechat_accounts SET id=? WHERE id=?", newID, -oldID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE wechat_accounts SET fleet_primary_id=? WHERE fleet_primary_id=?", newID, -oldID); err != nil {
+			return nil, err
+		}
+		for _, child := range childTables {
+			if _, err = tx.ExecContext(ctx, "UPDATE "+child.table+" SET "+child.column+"=? WHERE "+child.column+"=?", newID, -oldID); err != nil {
+				return nil, err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE app_settings SET key=? WHERE key=?", accountReferenceKey(newID), accountReferenceKey(-oldID)); err != nil {
+			return nil, err
+		}
+	}
+	// Keep SQLite's AUTOINCREMENT metadata aligned for any external inserts.
+	_, _ = tx.ExecContext(ctx, "UPDATE sqlite_sequence SET seq=? WHERE name='wechat_accounts'", int64(len(oldIDs)))
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return mapping, nil
 }
 
 func (db *DB) SetAccountUIN(ctx context.Context, id, uin int64) error {
@@ -556,6 +914,17 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated
 	return err
 }
 
+// EnsureSetting stores value only when key is absent and returns the value
+// actually stored, so concurrent first writers agree on one value.
+func (db *DB) EnsureSetting(ctx context.Context, key, value string) (string, error) {
+	if _, err := db.sql.ExecContext(ctx, `
+INSERT INTO app_settings(key, value, updated_at) VALUES(?,?,?)
+ON CONFLICT(key) DO NOTHING`, key, value, time.Now().Unix()); err != nil {
+		return "", err
+	}
+	return db.GetSetting(ctx, key)
+}
+
 func (db *DB) SetAccountCredential(ctx context.Context, id int64, loginBuffer string, credentials map[string]any) error {
 	credJSON, err := marshalNullable(credentials)
 	if err != nil {
@@ -581,8 +950,76 @@ func (db *DB) SetAccountCredentialStatus(ctx context.Context, id int64, loginBuf
 	return err
 }
 
+// ApplyCredentialRefresh rejects results from requests that started before a
+// rescan, manual status change, deletion or ID compaction. Keep the exact JSON
+// read from SQLite: reserializing an imported record may change whitespace/order.
+func (db *DB) ApplyCredentialRefresh(ctx context.Context, expected *WechatAccount, loginBuffer string, credentials map[string]any, status string) (bool, error) {
+	if status == "expired" {
+		loginBuffer, credentials = "", keepChannelMarkers(expected.Credentials)
+	}
+	if status == StatusSessionOnly {
+		// Keep the scan timestamp as audit metadata and the channel marker,
+		// never rejected tokens.
+		credentials = keepChannelMarkers(expected.Credentials)
+		if observed := int64Credential(expected.Credentials, "refresh_token_observed_at"); observed > 0 {
+			if credentials == nil {
+				credentials = map[string]any{}
+			}
+			credentials["refresh_token_observed_at"] = observed
+		}
+		loginBuffer = ""
+	}
+	encoded, err := marshalNullable(credentials)
+	if err != nil {
+		return false, err
+	}
+	now := time.Now().Unix()
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE wechat_accounts SET login_buffer=?, credentials=?, status=?, last_checked_at=?, updated_at=?
+WHERE id=? AND openid=? AND credentials IS ? AND login_buffer=? AND status IS ?`,
+		loginBuffer, encoded, status, now, now, expected.ID, expected.OpenID, expected.credentialJSON, expected.LoginBuffer, nullableString(expected.Status))
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if count == 1 && status == "expired" {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE wechat_account_id=?", expected.ID); err != nil {
+			return false, err
+		}
+	}
+	return count == 1, tx.Commit()
+}
+
 func (db *DB) SetAccountStatus(ctx context.Context, id int64, status string) error {
 	now := time.Now().Unix()
+	if status == "expired" {
+		// Expiry wipes secrets but keeps the non-secret channel identity.
+		var raw sql.NullString
+		if err := db.sql.QueryRowContext(ctx, "SELECT credentials FROM wechat_accounts WHERE id=?", id).Scan(&raw); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var current map[string]any
+		if raw.Valid {
+			_ = json.Unmarshal([]byte(raw.String), &current)
+		}
+		kept, err := marshalNullable(keepChannelMarkers(current))
+		if err != nil {
+			return err
+		}
+		_, err = db.sql.ExecContext(ctx,
+			"UPDATE wechat_accounts SET login_buffer='', credentials=?, status=?, last_checked_at=?, updated_at=? WHERE id=?",
+			kept, status, now, now, id,
+		)
+		return err
+	}
 	_, err := db.sql.ExecContext(ctx,
 		"UPDATE wechat_accounts SET status=?, last_checked_at=?, updated_at=? WHERE id=?",
 		status, now, now, id,
@@ -591,14 +1028,99 @@ func (db *DB) SetAccountStatus(ctx context.Context, id int64, status string) err
 }
 
 func (db *DB) DeleteAccount(ctx context.Context, id int64) error {
-	_, err := db.sql.ExecContext(ctx, "DELETE FROM wechat_accounts WHERE id=?", id)
-	return err
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = deleteAccountRow(ctx, tx, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM app_settings WHERE key=?", accountReferenceKey(id)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// deleteAccountRow removes one account row and keeps its fleet consistent in
+// the same transaction. Account IDs are reused after a delete, so a member left
+// pointing at a removed primary could later be adopted by an unrelated new
+// account. Members of a removed primary move to the lowest remaining ID; a fleet
+// left with a single account is dissolved.
+func deleteAccountRow(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
+	var formerPrimary sql.NullInt64
+	if err := tx.QueryRowContext(ctx, "SELECT fleet_primary_id FROM wechat_accounts WHERE id=?", id).Scan(&formerPrimary); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, "DELETE FROM wechat_accounts WHERE id=?", id)
+	if err != nil {
+		return false, err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return false, nil
+	}
+	return true, repairFleetAfterDelete(ctx, tx, id, formerPrimary)
+}
+
+func repairFleetAfterDelete(ctx context.Context, tx *sql.Tx, removedID int64, formerPrimary sql.NullInt64) error {
+	// A removed primary: its members move to the lowest remaining ID.
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM wechat_accounts WHERE fleet_primary_id=? ORDER BY id", removedID)
+	if err != nil {
+		return err
+	}
+	var orphans []int64
+	for rows.Next() {
+		var member int64
+		if err = rows.Scan(&member); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		orphans = append(orphans, member)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	switch {
+	case len(orphans) == 1:
+		if _, err = tx.ExecContext(ctx, "UPDATE wechat_accounts SET fleet_primary_id=NULL WHERE id=?", orphans[0]); err != nil {
+			return err
+		}
+	case len(orphans) > 1:
+		if _, err = tx.ExecContext(ctx, "UPDATE wechat_accounts SET fleet_primary_id=? WHERE fleet_primary_id=?", orphans[0], removedID); err != nil {
+			return err
+		}
+	}
+	// A removed member: a fleet that is left with one account is dissolved.
+	if formerPrimary.Valid && formerPrimary.Int64 != removedID {
+		var left int
+		if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM wechat_accounts WHERE id=? OR fleet_primary_id=?", formerPrimary.Int64, formerPrimary.Int64).Scan(&left); err != nil {
+			return err
+		}
+		if left <= 1 {
+			if _, err = tx.ExecContext(ctx, "UPDATE wechat_accounts SET fleet_primary_id=NULL WHERE id=? OR fleet_primary_id=?", formerPrimary.Int64, formerPrimary.Int64); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (db *DB) GetSession(ctx context.Context, accountID int64, tcpProxy string) (*SessionRow, error) {
 	row := db.sql.QueryRowContext(ctx,
 		"SELECT id, wechat_account_id, uin, tcp_proxy, session_blob, expires_at, created_at, updated_at FROM sessions WHERE wechat_account_id=? AND tcp_proxy=? AND expires_at>?",
 		accountID, tcpProxy, time.Now().Unix(),
+	)
+	return scanSession(row)
+}
+
+// GetSessionForRecovery also reads a legacy local-cache deadline. The caller
+// must validate the issued PSK deadline before attempting to reuse the state.
+func (db *DB) GetSessionForRecovery(ctx context.Context, accountID int64, tcpProxy string) (*SessionRow, error) {
+	row := db.sql.QueryRowContext(ctx,
+		"SELECT id, wechat_account_id, uin, tcp_proxy, session_blob, expires_at, created_at, updated_at FROM sessions WHERE wechat_account_id=? AND tcp_proxy=?",
+		accountID, tcpProxy,
 	)
 	return scanSession(row)
 }
@@ -623,6 +1145,11 @@ func (db *DB) PutSession(ctx context.Context, accountID int64, uin *int64, sessi
 
 func (db *DB) InvalidateSession(ctx context.Context, accountID int64, tcpProxy string) error {
 	_, err := db.sql.ExecContext(ctx, "DELETE FROM sessions WHERE wechat_account_id=? AND tcp_proxy=?", accountID, tcpProxy)
+	return err
+}
+
+func (db *DB) InvalidateAccountSessions(ctx context.Context, accountID int64) error {
+	_, err := db.sql.ExecContext(ctx, "DELETE FROM sessions WHERE wechat_account_id=?", accountID)
 	return err
 }
 
@@ -691,33 +1218,132 @@ func (db *DB) GetFeatureByName(ctx context.Context, name string) (*Feature, erro
 	return &f, nil
 }
 
+// ScanProduct identifies the channel even for historical records whose secrets
+// and provider marker were wiped. Only explicit identity namespaces can recover
+// a missing marker; native OpenIDs alone cannot distinguish GameAssist from YYB.
+func (a *WechatAccount) ScanProduct() string {
+	if a == nil {
+		return "appstore"
+	}
+	for _, provider := range []string{"pcmgr", "qbbrowser", "ldplayer"} {
+		if strings.HasPrefix(a.OpenID, provider+":") {
+			return provider
+		}
+	}
+	switch provider := stringCredential(a.Credentials, "provider"); provider {
+	case "pcmgr", "gameassist", "qbbrowser", "ldplayer":
+		return provider
+	}
+	return "appstore"
+}
+
 func (a *WechatAccount) Public() AccountPublic {
+	product := a.ScanProduct()
+	var refreshTokenObservedAt *int64
+	rescanRecommended := a.SessionOnly()
+	var credentialExpiresAt *int64
+	credentialExpiresIn := int64(0)
+	credentialExpiresAtValue := int64Credential(a.Credentials, "expires_at")
+	credentialExpiresIn = int64Credential(a.Credentials, "expires_in")
+	if credentialExpiresIn <= 0 {
+		credentialExpiresIn = 7200
+	}
+	if stringCredential(a.Credentials, "refreshtoken") != "" || a.SessionOnly() {
+		if observedAt := int64Credential(a.Credentials, "refresh_token_observed_at"); observedAt > 0 {
+			refreshTokenObservedAt = &observedAt
+			rescanRecommended = rescanRecommended || time.Now().Unix()-observedAt >= int64((25*24*time.Hour)/time.Second)
+		}
+	}
+	if credentialExpiresAtValue <= 0 {
+		if refreshedAt := int64Credential(a.Credentials, "refresh_refreshed_at"); refreshedAt > 0 {
+			credentialExpiresAtValue = refreshedAt + credentialExpiresIn
+		}
+	}
+	if product == "gameassist" && stringCredential(a.Credentials, "expiry_source") == "" && credentialExpiresIn == 30*86400 && credentialExpiresAtValue > 0 {
+		credentialExpiresAtValue = credentialExpiresAtValue - credentialExpiresIn + 7200
+		credentialExpiresIn = 7200
+	}
+	if product == "qbbrowser" {
+		var qb qbbrowser.Credentials
+		raw, _ := json.Marshal(a.Credentials["qbbrowser"])
+		_ = json.Unmarshal(raw, &qb)
+		// Native WXAuth has an upstream expiry; historical ctk-only imports
+		// do not. Neither has a verified 30-day authorization lifetime.
+		credentialExpiresAtValue, credentialExpiresIn = int64Credential(a.Credentials, "expires_at"), int64Credential(a.Credentials, "expires_in")
+		if !qb.CanRefresh() {
+			credentialExpiresAtValue, credentialExpiresIn = 0, 0
+		}
+		refreshTokenObservedAt, rescanRecommended = nil, a.SessionOnly()
+	}
+	if product == "ldplayer" {
+		// Previous versions stored fabricated one/seven-day placeholders.
+		credentialExpiresAtValue, credentialExpiresIn = 0, 0
+		refreshTokenObservedAt = nil
+	}
+	if credentialExpiresAtValue > 0 {
+		expiresAt := credentialExpiresAtValue
+		credentialExpiresAt = &expiresAt
+		// A transient refresh failure is kept as unknown for retry purposes, but
+		// once the cached credential is past its expiry the UI should still guide
+		// the operator to rescan instead of leaving the account looking healthy.
+		if product != "pcmgr" && !rescanRecommended && (a.Status == nil || strings.EqualFold(strings.TrimSpace(*a.Status), "unknown")) && expiresAt <= time.Now().Unix() {
+			rescanRecommended = true
+		}
+	}
 	return AccountPublic{
-		ID:            a.ID,
-		OpenID:        a.OpenID,
-		UIN:           a.UIN,
-		Alias:         a.Alias,
-		Nickname:      a.Nickname,
-		Remark:        a.Remark,
-		Avatar:        a.Avatar,
-		Status:        a.Status,
-		OwnerUserID:   a.OwnerUserID,
-		APIShared:     a.APIShared,
-		LastCheckedAt: a.LastCheckedAt,
-		CreatedAt:     a.CreatedAt,
-		UpdatedAt:     a.UpdatedAt,
+		ScanProduct:            product,
+		FleetPrimaryID:         a.FleetPrimaryID,
+		ID:                     a.ID,
+		OpenID:                 a.OpenID,
+		UIN:                    a.UIN,
+		Alias:                  a.Alias,
+		Nickname:               a.Nickname,
+		Remark:                 a.Remark,
+		Avatar:                 a.Avatar,
+		Status:                 a.Status,
+		RefreshTokenObservedAt: refreshTokenObservedAt,
+		CredentialExpiresAt:    credentialExpiresAt,
+		CredentialExpiresIn:    credentialExpiresIn,
+		RescanRecommended:      rescanRecommended,
+		APIShared:              a.APIShared,
+		LastCheckedAt:          a.LastCheckedAt,
+		CreatedAt:              a.CreatedAt,
+		UpdatedAt:              a.UpdatedAt,
 	}
 }
 
-// OwnedBy 判断账号是否归属指定用户（ownerUserID<=0 视为不限制）。
-func (a *WechatAccount) OwnedBy(ownerUserID int64) bool {
-	if ownerUserID <= 0 {
-		return true
-	}
-	return a.OwnerUserID != nil && *a.OwnerUserID == ownerUserID
+func stringCredential(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
 }
 
-const selectAccountSQL = `SELECT id, openid, uin, alias, nickname, remark, avatar, user_info, login_buffer, credentials, status, last_checked_at, created_at, updated_at, owner_user_id, api_shared FROM wechat_accounts`
+// keepChannelMarkers retains only a known, non-secret provider marker when a
+// rejected authorization is wiped. Channel identity must outlive its secrets.
+func keepChannelMarkers(credentials map[string]any) map[string]any {
+	switch provider := stringCredential(credentials, "provider"); provider {
+	case "pcmgr", "gameassist", "qbbrowser", "ldplayer":
+		return map[string]any{"provider": provider}
+	}
+	return nil
+}
+
+func int64Credential(values map[string]any, key string) int64 {
+	switch value := values[key].(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		result, _ := value.Int64()
+		return result
+	default:
+		return 0
+	}
+}
+
+const selectAccountSQL = `SELECT id, openid, uin, alias, nickname, remark, avatar, user_info, login_buffer, credentials, status, last_checked_at, created_at, updated_at, fleet_primary_id, api_shared FROM wechat_accounts`
 
 type accountScanner interface {
 	Scan(dest ...any) error
@@ -734,16 +1360,16 @@ func (db *DB) scanAccount(row accountScanner) (*WechatAccount, error) {
 func scanAccountRows(row accountScanner) (*WechatAccount, error) {
 	var (
 		a                               WechatAccount
-		uin, lastChecked, ownerID       sql.NullInt64
-		apiShared                       sql.NullInt64
+		uin, lastChecked, fleetPrimary  sql.NullInt64
 		alias, nickname, remark, avatar sql.NullString
 		userJSON, credJSON              sql.NullString
 		status                          sql.NullString
+		apiShared                       sql.NullInt64
 	)
 	err := row.Scan(
 		&a.ID, &a.OpenID, &uin, &alias, &nickname, &remark, &avatar, &userJSON,
-		&a.LoginBuffer, &credJSON, &status, &lastChecked, &a.CreatedAt, &a.UpdatedAt,
-		&ownerID, &apiShared,
+		&a.LoginBuffer, &credJSON, &status, &lastChecked, &a.CreatedAt, &a.UpdatedAt, &fleetPrimary,
+		&apiShared,
 	)
 	if err != nil {
 		return nil, err
@@ -751,10 +1377,6 @@ func scanAccountRows(row accountScanner) (*WechatAccount, error) {
 	if uin.Valid {
 		a.UIN = &uin.Int64
 	}
-	if ownerID.Valid {
-		a.OwnerUserID = &ownerID.Int64
-	}
-	a.APIShared = !apiShared.Valid || apiShared.Int64 != 0
 	a.Alias = stringPtrFromNull(alias)
 	a.Nickname = stringPtrFromNull(nickname)
 	a.Remark = stringPtrFromNull(remark)
@@ -763,12 +1385,18 @@ func scanAccountRows(row accountScanner) (*WechatAccount, error) {
 	if lastChecked.Valid {
 		a.LastCheckedAt = &lastChecked.Int64
 	}
+	if fleetPrimary.Valid {
+		a.FleetPrimaryID = &fleetPrimary.Int64
+	}
+	// 缺列(NULL)按允许脚本读取处理，与 schema 默认值一致。
+	a.APIShared = !apiShared.Valid || apiShared.Int64 != 0
 	if userJSON.Valid && userJSON.String != "" {
 		_ = json.Unmarshal([]byte(userJSON.String), &a.UserInfo)
 	}
 	if credJSON.Valid && credJSON.String != "" {
 		_ = json.Unmarshal([]byte(credJSON.String), &a.Credentials)
 	}
+	a.credentialJSON = credJSON
 	return &a, nil
 }
 
@@ -782,9 +1410,18 @@ func scanSession(row accountScanner) (*SessionRow, error) {
 	if uin.Valid {
 		s.UIN = &uin.Int64
 	}
-	if err := json.Unmarshal([]byte(blob), &s.SessionBlob); err != nil {
+	// Session identities are int64, often beyond float64's exact integer
+	// range. A rounded UIN makes every request after the fresh login carry a
+	// different identity. Keep the JSON number until protocol conversion.
+	decoder := json.NewDecoder(strings.NewReader(blob))
+	decoder.UseNumber()
+	if err := decoder.Decode(&s.SessionBlob); err != nil {
 		return nil, fmt.Errorf("decode session_blob: %w", err)
 	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return nil, fmt.Errorf("decode session_blob: trailing data")
+	}
+	s.blobJSON = blob
 	return &s, nil
 }
 

@@ -3,112 +3,126 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>运行管理 - YYB Go</title>
-  <link rel="stylesheet" href="/static/css/platform.css">
+  <title>运行与日志 - wxcode-YYB</title>
+  <script>try{var theme=localStorage.getItem("yyb-skin");if(theme==="light"||theme==="dark")document.documentElement.dataset.theme=theme}catch(e){}</script>
+  <link rel="stylesheet" href="/static/css/platform.css?v=20261112-graphite">
+  <link rel="stylesheet" href="/static/css/skin-clean.css?v=20261112-graphite">
+  <link rel="stylesheet" href="/static/css/system-logs.css?v=20261112-graphite">
   <style>
-    :root {
-      color-scheme: light;
-      --bg: oklch(1 0 0); --bg-soft: oklch(0.973 0.008 285); --surface: oklch(0.985 0.005 285);
-      --surface-strong: oklch(0.946 0.012 285); --ink: oklch(0.2 0.03 280); --muted: oklch(0.44 0.03 280);
-      --faint: oklch(0.58 0.02 280); --line: oklch(0.89 0.015 285); --primary: oklch(0.52 0.2 280);
-      --primary-hover: oklch(0.46 0.19 280); --accent: oklch(0.5 0.11 210); --accent-soft: oklch(0.94 0.03 210);
-      --success: oklch(0.55 0.135 150); --warning-soft: oklch(0.955 0.04 78); --danger: oklch(0.55 0.18 25);
-      --code-bg: oklch(0.17 0.035 280); --code-ink: oklch(0.96 0.006 280); --radius: 12px;
+    /* 运行与日志：账号选择 + 推送卡片 + 四视图 */
+    main { display: grid; gap: var(--gap); align-content: start; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .page-head h1, .page-head h2 { font-size: 22px; }
+    .page-head p { margin-top: 4px; color: var(--muted); max-width: 70ch; }
+    .workspace { gap: var(--gap); align-items: start; }
+    .control-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
+    .account-id { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+    .account-id code { color: var(--ink-2); }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 10px; margin: 0; }
+    .stats > div { padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+    .stats dt { color: var(--muted); font-size: 11px; }
+    .stats dd { margin: 3px 0 0; font-family: var(--mono); font-size: 19px; font-weight: 650; color: var(--ink); }
+
+    .push-settings { display: grid; padding: 0; overflow: hidden; align-content: start; }
+    .push-settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 18px 20px; }
+    .push-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .push-icon { width: 38px; height: 38px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 12px; background: var(--primary-soft); color: var(--primary); }
+    .push-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .push-copy { min-width: 0; }
+    .push-copy h3 { font-size: 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .push-copy p { margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .push-status { display: inline-flex; align-items: center; gap: 7px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface-3); color: var(--muted); font-size: 11.5px; }
+    .push-status.enabled { color: var(--success); border-color: rgba(46, 211, 160, 0.32); background: var(--success-soft); }
+    .push-status .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--faint); }
+    .push-status.enabled .dot { background: var(--success); }
+    .push-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; padding: 16px 18px; border-top: 1px solid var(--line); background: var(--surface-2); }
+    .push-form[hidden] { display: none; }
+    .push-form .btn { align-self: end; justify-self: start; }
+    .configured { color: var(--muted); font-size: 11.5px; }
+
+    .panel-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .toolbar input, .toolbar select { width: auto; min-width: 160px; }
+    .script-help { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); padding: 0 14px; }
+    .script-help > summary { cursor: pointer; padding: 11px 0; font-size: 12.5px; color: var(--ink-2); }
+    .script-help p, .script-help ol { color: var(--muted); font-size: 12px; line-height: 1.7; }
+    .script-help ol { padding-left: 20px; margin: 8px 0 12px; }
+    .script-help code { color: var(--ink-2); }
+
+    .tab-count { margin-left: 6px; font-family: var(--mono); font-size: 11px; opacity: 0.8; }
+    .script-name { display: block; color: var(--ink); font-weight: 600; }
+    .script-path { display: block; margin-top: 2px; color: var(--muted); font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+    .muted { color: var(--muted); }
+    .state { display: inline-flex; align-items: center; gap: 7px; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+    .state .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--faint); }
+    .state.running { color: var(--info); border-color: rgba(56, 189, 248, 0.32); background: var(--info-soft); }
+    .state.running .dot { background: var(--info); animation: runs-pulse 1.4s ease-in-out infinite; }
+    .state.enabled, .state.done { color: var(--success); border-color: rgba(46, 211, 160, 0.32); background: var(--success-soft); }
+    .state.enabled .dot, .state.done .dot { background: var(--success); }
+    .state.unready, .state.waiting { color: var(--accent); border-color: rgba(245, 165, 36, 0.32); background: var(--accent-soft); }
+    .state.unready .dot, .state.waiting .dot { background: var(--accent); }
+    @keyframes runs-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .run-scope { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .run-scope p { color: var(--muted); font-size: 12px; }
+    .system-band { display: grid; gap: 14px; }
+    .system-log-host { display: grid; gap: 12px; min-width: 0; }
+
+    @media (max-width: 899px) {
+      .control-grid { grid-template-columns: minmax(0, 1fr); }
+      .control-grid .btn { width: 100%; }
+      .stats { grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); }
+      tr.job-row, tr.run-row { display: grid; gap: 4px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+      tr.job-row td, tr.run-row td { border: 0; padding: 3px 0; display: flex; align-items: center; gap: 10px; }
+      tr.job-row td::before, tr.run-row td::before { content: attr(data-label); flex: 0 0 74px; color: var(--muted); font-size: 11.5px; }
+      tr.job-row td.name, tr.run-row td.name { display: block; padding-bottom: 6px; }
+      tr.job-row td.name::before, tr.run-row td.name::before { display: none; }
+      .push-form { grid-template-columns: minmax(0, 1fr); }
+      .row-actions { justify-content: flex-start; }
     }
-    * { box-sizing: border-box; }
-    body { min-height: 100vh; margin: 0; background: var(--bg-soft); color: var(--ink); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
-    button, input, select { font: inherit; } button { cursor: pointer; } [hidden] { display: none !important; }
-    .topbar { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 28px; background: var(--bg); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
-    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; } .mark { width: 36px; height: 36px; border-radius: var(--radius); display: grid; place-items: center; background: linear-gradient(135deg, oklch(0.55 0.2 280), oklch(0.45 0.19 300)); color: white; font-weight: 800; flex: 0 0 auto; }
-    .brand h1 { margin: 0; font-size: 18px; line-height: 1.1; letter-spacing: 0; } .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
-    .nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .nav a, .btn { min-height: 36px; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; background: var(--bg); color: var(--ink); text-decoration: none; transition: background 160ms ease, border-color 160ms ease, color 160ms ease; }
-    .nav a:hover, .btn:hover { background: var(--surface-strong); } .nav a[aria-current="page"] { color: var(--primary); border-color: var(--primary); font-weight: 700; }
-    .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--bg); font-weight: 700; box-shadow: 0 2px 8px oklch(0.52 0.2 280 / 0.25); } .btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); box-shadow: 0 3px 12px oklch(0.52 0.2 280 / 0.32); }
-    .btn.small { min-height: 32px; padding: 6px 9px; font-size: 13px; } .btn:disabled { cursor: not-allowed; opacity: .55; }
-    .nav a:focus-visible, .btn:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, .tab:focus-visible, .toggle input:focus-visible + span { outline: 3px solid oklch(0.82 0.08 190); outline-offset: 2px; }
-    main { width: min(1440px, 100%); margin: 0 auto; padding: 24px 28px 40px; }
-    .page-head, .section-head, .scope-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
-    .page-head { margin-bottom: 18px; } .page-head h2 { margin: 0; font-size: 22px; letter-spacing: 0; text-wrap: balance; } .page-head p { margin: 6px 0 0; color: var(--muted); max-width: 72ch; text-wrap: pretty; }
-    .connection { min-height: 32px; display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--muted); white-space: nowrap; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; } .connection.ok .dot { background: var(--success); } .connection.bad .dot { background: var(--danger); }
-    .workspace { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; box-shadow: 0 1px 3px oklch(0.2 0.02 285 / 0.05); } .band { padding: 18px; border-bottom: 1px solid var(--line); } .band:last-child { border-bottom: 0; }
-    .control-grid { display: grid; grid-template-columns: minmax(280px, 1fr) auto; gap: 12px; align-items: end; }
-    .field { display: grid; gap: 6px; min-width: 0; } .field label { font-weight: 700; font-size: 13px; }
-    .field input, .field select, .toolbar input, .toolbar select { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); color: var(--ink); padding: 8px 10px; }
-    .field input::placeholder, .toolbar input::placeholder { color: var(--muted); opacity: 1; }
-    .account-id { margin-top: 10px; color: var(--muted); overflow-wrap: anywhere; } .account-id code { color: var(--ink); }
-    .stats { display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); margin: 16px -18px -18px; border-top: 1px solid var(--line); background: var(--surface); }
-    .stats div { padding: 14px 18px; border-right: 1px solid var(--line); } .stats div:last-child { border-right: 0; } .stats dt { color: var(--muted); font-size: 12px; } .stats dd { margin: 4px 0 0; font-size: 20px; font-weight: 760; font-variant-numeric: tabular-nums; color: var(--primary); }
-    .settings { padding: 0; } .settings summary { min-height: 54px; padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 14px; cursor: pointer; font-weight: 700; list-style: none; }
-    .settings summary::-webkit-details-marker { display: none; } .settings summary::after { content: "+"; color: var(--muted); font-size: 20px; font-weight: 400; } .settings[open] summary::after { content: "−"; } .setting-state { margin-left: auto; color: var(--muted); font-weight: 400; }
-    .push-form { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(240px, 1.3fr) minmax(170px, .7fr) auto; gap: 12px; align-items: end; padding: 16px 18px 18px; border-top: 1px solid var(--line); } .configured { color: var(--success); font-size: 12px; min-height: 17px; }
-    .section-title h3 { margin: 0; font-size: 16px; letter-spacing: 0; } .section-title p, .scope-head p { margin: 4px 0 0; color: var(--muted); }
-    .tabs { display: inline-flex; align-items: stretch; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
-    .tab { min-height: 36px; padding: 7px 11px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--muted); white-space: nowrap; } .tab:last-child { border-right: 0; }
-    .tab:hover { background: var(--surface-strong); color: var(--ink); } .tab[aria-selected="true"] { background: var(--bg); color: var(--primary); font-weight: 700; box-shadow: inset 0 -2px var(--primary); }
-    .panel { margin-top: 16px; } .panel-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .toolbar { display: flex; align-items: center; gap: 8px; } .toolbar input { width: min(310px, 42vw); } .toolbar select { width: min(190px, 30vw); }
-    .notice { margin-top: 14px; padding: 10px 12px; border: 1px solid oklch(0.86 0.06 78); border-radius: var(--radius); background: var(--warning-soft); color: oklch(0.36 0.07 72); } .notice strong { color: var(--ink); } .notice.info { border-color: oklch(0.84 0.04 190); background: var(--accent-soft); color: oklch(0.32 0.08 190); }
-    .run-scope { padding: 12px 14px; background: var(--accent-soft); border: 1px solid oklch(0.84 0.04 190); border-radius: var(--radius); } .run-scope strong { color: oklch(0.32 0.08 190); }
-    .table-wrap { margin: 14px -18px -18px; overflow-x: auto; } table { width: 100%; border-collapse: collapse; min-width: 860px; }
-    th, td { padding: 11px 14px; border-top: 1px solid var(--line); text-align: left; vertical-align: middle; } th { background: var(--surface); color: var(--muted); font-size: 12px; white-space: nowrap; }
-    tr.job-row:hover, tr.run-row:hover { background: var(--surface); } td.name { min-width: 220px; } .script-name { display: block; font-weight: 700; } .script-path { display: block; margin-top: 2px; color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
-    .state { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; } .state.enabled .dot, .state.done .dot { background: var(--success); } .state.running .dot, .state.waiting .dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); } .state.unready, .muted { color: var(--muted); }
-    .row-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-    .toggle { position: relative; display: inline-flex; align-items: center; } .toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-    .toggle span { width: 38px; height: 22px; border-radius: 999px; background: var(--surface-strong); border: 1px solid var(--line); position: relative; transition: background 160ms ease; } .toggle span::after { content: ""; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; border-radius: 50%; background: var(--bg); box-shadow: 0 1px 3px oklch(0.2 0.02 250 / .22); transition: transform 160ms ease; }
-    .toggle input:checked + span { background: var(--success); border-color: var(--success); } .toggle input:checked + span::after { transform: translateX(16px); } .toggle input:disabled + span { opacity: .55; }
-    .empty { padding: 38px 18px; text-align: center; color: var(--muted); border-top: 1px solid var(--line); } .empty p { margin: 0 0 12px; } .skeleton { height: 14px; border-radius: 4px; background: var(--surface-strong); width: 72%; }
-    .log-row td { padding: 0; background: var(--code-bg); color: var(--code-ink); } .inline-log { padding: 14px 18px 16px; } .log-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; } .log-head strong { font-size: 13px; } .inline-log .btn { background: transparent; border-color: oklch(0.38 0.02 252); color: var(--code-ink); }
-    pre { margin: 12px 0 0; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; }
-    .toast { position: fixed; right: 18px; bottom: 18px; max-width: min(420px, calc(100vw - 36px)); padding: 10px 13px; border-radius: var(--radius); background: var(--ink); color: var(--bg); box-shadow: 0 8px 30px oklch(0.2 0.02 250 / .24); z-index: 30; } .toast.error { background: var(--danger); }
-    @media (max-width: 900px) { .push-form { grid-template-columns: 1fr 1fr; } .push-form .btn { width: 100%; } .panel-tools { align-items: stretch; flex-direction: column; } .toolbar input, .toolbar select { width: 100%; } }
-    @media (max-width: 700px) {
-      .topbar { position: static; align-items: flex-start; padding: 14px 16px; } .brand p { display: none; } .nav { justify-content: flex-end; } .nav a { min-height: 34px; padding: 7px 9px; font-size: 13px; }
-      main { padding: 18px 12px 28px; } .page-head, .section-head, .scope-head { display: grid; } .control-grid, .push-form { grid-template-columns: 1fr; }
-      .stats { grid-template-columns: 1fr 1fr; } .stats div:nth-child(2) { border-right: 0; } .stats div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-      .section-head .tabs, .panel-tools .tabs { width: 100%; } .tab { flex: 1 1 0; padding-inline: 6px; } .toolbar { display: grid; grid-template-columns: 1fr; }
-      .table-wrap { overflow: visible; } table { min-width: 0; } thead { display: none; } tbody, tr, td { display: block; width: 100%; }
-      tr.job-row, tr.run-row { padding: 12px 14px; border-top: 1px solid var(--line); } tr.job-row td, tr.run-row td { border: 0; padding: 5px 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; text-align: right; }
-      tr.job-row td::before, tr.run-row td::before { content: attr(data-label); color: var(--muted); font-size: 12px; flex: 0 0 76px; text-align: left; } tr.job-row td.name, tr.run-row td.name { min-width: 0; display: block; text-align: left; padding-bottom: 8px; } tr.job-row td.name::before, tr.run-row td.name::before { display: none; }
-      .row-actions { justify-content: flex-end; flex-wrap: wrap; } .log-row td { border-top: 0; } .inline-log { padding: 14px; }
-    }
-    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><div class="mark" aria-hidden="true">Y</div><div><h1>YYB Go</h1><p>微信账号与青龙任务控制台</p></div></div>
-    <nav class="nav" aria-label="主导航"><a href="/">账号控制台</a><a href="/runs" aria-current="page">运行管理</a><a href="/scan">扫码添加</a><a href="/docs/index.html">Swagger</a></nav>
-  </header>
   <main>
-    <div class="page-head"><div><h2>账号运行管理</h2><p>按微信账号运行脚本，并查看该账号自己的青龙日志。</p></div><div class="connection" id="connection"><span class="dot"></span><span>正在连接青龙</span></div></div>
-    <div class="workspace">
-      <section class="band" aria-labelledby="accountHeading">
+    <div class="page-head page-hero">
+      <div class="hero-copy"><h1>账号运行管理</h1><p>按微信账号运行脚本，并查看该账号自己的青龙日志与调用记录。</p></div>
+      <div class="hero-actions"><div class="connection" id="connection"><span class="dot"></span><span>正在连接青龙</span></div></div>
+    </div>
+    <div class="workspace grid-12">
+      <section class="band col-7" aria-labelledby="accountHeading">
         <div class="control-grid"><div class="field"><label for="accountSelect" id="accountHeading">当前账号</label><select id="accountSelect"><option>正在加载账号</option></select></div><button class="btn" type="button" id="reloadBtn">刷新状态</button></div>
         <div class="account-id" id="accountIdentity">OpenID: -</div>
         <dl class="stats" aria-label="当前账号任务统计"><div><dt>已配置</dt><dd id="configuredCount">-</dd></div><div><dt>定时启用</dt><dd id="enabledCount">-</dd></div><div><dt>正在运行</dt><dd id="runningCount">-</dd></div><div><dt>可用脚本</dt><dd id="compatibleCount">-</dd></div></dl>
       </section>
-      <details class="settings" id="pushSettings">
-        <summary><span>推送设置</span><span class="setting-state" id="pushSummary">正在读取</span></summary>
-        <form class="push-form" id="pushForm">
+      <section class="push-settings col-5" id="pushSettings" aria-labelledby="pushHeading">
+        <div class="push-settings-head">
+          <div class="push-heading">
+            <span class="push-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21.5 3.5 2.8 10.6a.6.6 0 0 0 .05 1.12l6.7 2.2 2.2 6.7a.6.6 0 0 0 1.12.05L21.5 3.5Z"/><path d="m9.5 13.9 11.9-10.3"/></svg></span>
+            <div class="push-copy"><h3 id="pushHeading">当前账号独立推送 <span class="push-status" id="pushStatus"><span class="dot"></span><span id="pushSummary">正在读取</span></span></h3><p id="pushAccountContext">切换上方账号可分别配置 Server酱、PushPlus 或企业微信机器人。</p></div>
+          </div>
+          <button class="btn" type="button" id="togglePushBtn" aria-expanded="false" aria-controls="pushForm">配置推送</button>
+        </div>
+        <form class="push-form" id="pushForm" hidden>
           <div class="field"><label for="pushChannel">推送方式</label><select id="pushChannel"><option value="none">关闭推送</option><option value="serverchan">Server酱</option><option value="pushplus">PushPlus</option><option value="qywx">企业微信机器人</option></select></div>
           <div class="field" id="tokenField"><label for="pushToken">Token / Key</label><input id="pushToken" type="password" autocomplete="new-password" placeholder="填写新密钥"><span class="configured" id="tokenConfigured"></span></div>
           <div class="field" id="topicField" hidden><label for="pushTopic">PushPlus 群组编码</label><input id="pushTopic" autocomplete="off" placeholder="可选"><span class="configured" id="topicConfigured"></span></div>
           <button class="btn primary" type="submit" id="savePushBtn">保存推送</button>
         </form>
-      </details>
-      <section class="band" aria-labelledby="managementHeading">
+      </section>
+      <section class="band col-12" aria-labelledby="managementHeading">
         <div class="section-head">
           <div class="section-title"><h3 id="managementHeading">账号任务</h3><p id="managementSummary">正在读取任务</p></div>
-          <div class="tabs" role="tablist" aria-label="管理视图" id="modeTabs"><button class="tab" type="button" role="tab" data-mode="tasks" aria-selected="true">账号任务</button><button class="tab" type="button" role="tab" data-mode="runs" aria-selected="false">账号日志 <span id="runTabCount">0</span></button></div>
+          <div class="tabs" role="tablist" aria-label="运行与日志视图" id="modeTabs"><button class="tab" type="button" role="tab" data-mode="tasks" aria-selected="true">任务</button><button class="tab" type="button" role="tab" data-mode="runs" aria-selected="false">账号日志 <span class="tab-count" id="runTabCount">0</span></button><button class="tab" type="button" role="tab" data-mode="calls" aria-selected="false">调用记录</button><button class="tab" type="button" role="tab" data-mode="system" aria-selected="false">系统日志</button></div>
         </div>
         <div class="panel" id="tasksPanel">
           <div class="panel-tools">
             <div class="tabs" role="tablist" aria-label="任务范围" id="taskTabs"><button class="tab" type="button" role="tab" data-view="configured" aria-selected="true">已配置 <span id="configuredTabCount">0</span></button><button class="tab" type="button" role="tab" data-view="enabled" aria-selected="false">已启用 <span id="enabledTabCount">0</span></button><button class="tab" type="button" role="tab" data-view="all" aria-selected="false">全部脚本 <span id="allTabCount">0</span></button></div>
             <div class="toolbar"><select id="taskDirSelect" aria-label="按目录筛选脚本" title="只看某个目录里的脚本"><option value="">全部目录</option></select><input id="taskSearchInput" type="search" placeholder="搜索脚本名称或路径" aria-label="搜索任务脚本"><button class="btn" type="button" id="clearTaskSearchBtn" hidden>清除</button></div>
           </div>
+          <details class="script-help"><summary>上传的脚本没显示？</summary>
+            <p>“全部脚本”来自已配置目录下的面板任务，单独上传文件不会自动入列。</p>
+            <ol><li>将支持 <code>YYB_SERVER</code> 的脚本上传到管理员配置的 <code>YYB_QINGLONG_REPO</code> 目录。</li><li>在面板新建任务，命令例如 <code>task 目录名/脚本.py</code>，填写正确的 Cron。若仅供 YYB 按账号运行，请将这个原始任务设为禁用，避免重复执行。</li><li>回到本页点击“刷新状态”，在“全部脚本”中按名称或路径搜索，再为当前账号启用。</li></ol>
+            <p>自建目录须加入 <code>YYB_QINGLONG_REPO</code>（多个目录以逗号分隔）并重启 YYB 服务；请保留原有目录。目录匹配不代表脚本已完成 YYB 协议适配。</p>
+          </details>
           <div class="notice" id="duplicateNotice" hidden><strong>检测到旧全局任务仍启用。</strong> 同一脚本可能被全局任务和账号任务重复执行，请先在青龙中停用对应全局任务。</div>
           <div class="notice info"><strong>运行范围：</strong>点「运行账号」只跑当前选中的那个 code 账号；打开「定时」后按<b>网关登录账号</b>隔离 —— 跑该登录账号名下的<b>全部 code 账号</b>，且同一脚本只建一条定时任务，不会重复执行。两种任务都会把任务前命令里的 <code>WECHAT_OPENIDS</code> 写死成对应范围，不会跑到别的登录账号的账号上。在青龙里直接运行同一个脚本不受影响，仍按青龙全局 <code>WECHAT_OPENIDS</code>（写 <code>ALL</code> 就是全部账号）。</div>
           <div class="notice" id="restrictedNotice" hidden><strong>脚本目录可见范围已启用。</strong> 当前登录账号只能看到管理员放行的目录，看不到的脚本既不会列出，也无法运行或开启定时。</div>
@@ -119,6 +133,18 @@
           <div class="panel-tools" style="margin-top: 14px"><div class="section-title"><p id="runSummary">正在读取账号日志</p></div><div class="toolbar"><input id="runSearchInput" type="search" placeholder="搜索日志中的脚本" aria-label="搜索账号日志"><button class="btn" type="button" id="clearRunSearchBtn" hidden>清除</button></div></div>
           <div class="table-wrap"><table><thead><tr><th>运行时间</th><th>脚本</th><th>账号</th><th>状态</th><th>日志大小</th><th>操作</th></tr></thead><tbody id="runsBody"></tbody></table><div class="empty" id="runsEmpty" hidden><p>当前账号还没有运行日志。</p><button class="btn" type="button" id="backToTasksBtn">选择脚本运行</button></div></div>
         </div>
+        <section class="band system-band" id="callsPanel" hidden aria-label="调用记录">
+          <div class="section-head">
+            <div class="section-title"><h3>调用记录</h3><p>接口请求与协议调用明细，来自系统日志的「接口请求」分类。</p></div>
+          </div>
+          <div class="system-log-host" data-system-logs="api"></div>
+        </section>
+        <section class="band system-band" id="systemPanel" hidden aria-label="系统日志">
+          <div class="section-head">
+            <div class="section-title"><h3>系统日志</h3><p>授权、续期与接口异常，保留近 7 天记录；分页与级别过滤与旧「运行日志」页一致。</p></div>
+          </div>
+          <div class="system-log-host" data-system-logs="all"></div>
+        </section>
       </section>
     </div>
   </main>
@@ -131,7 +157,8 @@
   </dialog>
   <div class="toast" id="toast" hidden role="status"></div>
   <script>
-    const state = { accounts: [], selectedRef: "", jobs: [], runs: [], mode: "tasks", taskView: "configured", busy: new Set(), pendingRun: null, openLogKey: "", logText: "", logLoading: false, timer: null, cronTotal: null, scriptSource: "", scriptsTotal: null, degradedNote: "", scopeCount: 0, restricted: false };
+    const initialView = new URLSearchParams(location.search).get("view");
+    const state = { accounts: [], selectedRef: "", jobs: [], runs: [], mode: initialView === "logs" ? "calls" : initialView === "system" ? "system" : "tasks", taskView: "configured", busy: new Set(), pendingRun: null, openLogKey: "", logText: "", logLoading: false, timer: null, cronTotal: null, scriptSource: "", scriptsTotal: null, degradedNote: "", scopeCount: 0, restricted: false, pushOpen: initialView === "push" };
     const $ = id => document.getElementById(id);
     function escapeHTML(value) { return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;"); }
     async function api(method, url, body) { const options = { method, headers: { "Content-Type": "application/json" } }; if (body !== undefined) options.body = JSON.stringify(body); const response = await fetch(url, options); const text = await response.text(); let payload = null; try { payload = text ? JSON.parse(text) : null; } catch { throw new Error(`服务返回了非 JSON 内容（HTTP ${response.status}）`); } if (!payload) throw new Error(`服务返回空响应（HTTP ${response.status}）`); const envelope = typeof payload === "object" && !Array.isArray(payload) && "code" in payload; if (!response.ok || (envelope && payload.code !== 0)) throw new Error(envelope ? (payload.msg || `请求失败（HTTP ${response.status}）`) : `HTTP ${response.status}`); return envelope ? payload.data : payload; }
@@ -141,14 +168,15 @@
     const getSelectedAccount = () => state.accounts.find(item => String(item.id) === String(state.selectedRef) || item.openid === state.selectedRef) || null;
     function formatTime(timestamp) { if (!timestamp) return "未运行"; return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(timestamp * 1000)); }
     function formatSize(size) { if (!size) return "-"; if (size < 1024) return `${size} B`; return `${(size / 1024).toFixed(1)} KB`; }
-    function setMode(mode) { state.mode = mode; state.openLogKey = ""; $("tasksPanel").hidden = mode !== "tasks"; $("runsPanel").hidden = mode !== "runs"; document.querySelectorAll("#modeTabs .tab").forEach(tab => tab.setAttribute("aria-selected", String(tab.dataset.mode === mode))); $("managementHeading").textContent = mode === "runs" ? "账号运行日志" : "账号任务"; if (mode === "runs") loadRuns(); else renderJobs(); }
+    function setMode(mode) { state.mode = mode; state.openLogKey = ""; $("tasksPanel").hidden = mode !== "tasks"; $("runsPanel").hidden = mode !== "runs"; $("callsPanel").hidden = mode !== "calls"; $("systemPanel").hidden = mode !== "system"; document.querySelectorAll("#modeTabs .tab").forEach(tab => tab.setAttribute("aria-selected", String(tab.dataset.mode === mode))); $("managementHeading").textContent = { tasks: "账号任务", runs: "账号运行日志", calls: "调用记录", system: "系统日志" }[mode] || "账号任务"; if (mode === "runs") loadRuns(); else if (mode === "tasks") renderJobs(); if (mode === "calls" || mode === "system" && window.SystemLogs) void window.SystemLogs.refresh(mode === "calls" ? "api" : "all"); }
     function setTaskView(view, focusSearch = false) { state.taskView = view; document.querySelectorAll("#taskTabs .tab").forEach(tab => tab.setAttribute("aria-selected", String(tab.dataset.view === view))); renderJobs(); if (focusSearch) $("taskSearchInput").focus(); }
     async function loadConnection() { const pill = $("connection"); try { const result = await api("GET", "/api/qinglong/status"); let panelName = "面板"; try { const config = await api("GET", "/api/qinglong/config"); panelName = config.type === "daidai" ? "呆呆面板" : "青龙"; } catch { /* 面板连接配置仅管理员可读 */ } pill.className = "connection " + (result.connected ? "ok" : "bad"); pill.lastElementChild.textContent = result.connected ? `${panelName}已连接` : (result.configured ? `${panelName}连接失败` : `${panelName}未配置`); pill.title = result.error || ""; } catch (error) { pill.className = "connection bad"; pill.lastElementChild.textContent = "面板连接失败"; pill.title = error.message; } }
     async function loadAccounts() { state.accounts = await api("GET", "/accounts"); const select = $("accountSelect"), saved = localStorage.getItem("yyb-runs-account"); if (!state.accounts.length) { select.innerHTML = '<option value="">暂无账号</option>'; state.selectedRef = ""; renderAccount(); return; } if (!state.accounts.some(item => String(item.id) === String(state.selectedRef))) state.selectedRef = state.accounts.some(item => String(item.id) === String(saved)) ? String(saved) : String(state.accounts[0].id); select.innerHTML = state.accounts.map(account => `<option value="${account.id}">${escapeHTML(accountName(account))} · ID ${account.id}</option>`).join(""); select.value = state.selectedRef; renderAccount(); }
-    function renderAccount() { const account = getSelectedAccount(), accountState = account?.status === "alive" ? "可用" : account?.status === "expired" ? "需重新扫码" : "待确认"; $("accountIdentity").innerHTML = account ? `状态：<strong>${accountState}</strong> · 账号：<code>${escapeHTML(accountLabel(account))}</code> · OpenID：<code>${escapeHTML(account.openid)}</code>` : "请先扫码添加账号"; $("runScope").textContent = account ? `${accountLabel(account)} 的运行日志` : "账号运行日志"; }
-    async function loadSelected() { state.openLogKey = ""; state.pendingRun = null; if (!state.selectedRef) { state.jobs = []; state.runs = []; renderJobs(); renderRuns(); return; } $("managementSummary").textContent = "正在读取任务"; try { const [jobsResult, push] = await Promise.all([api("GET", `/api/qinglong/jobs?ref=${encodeURIComponent(state.selectedRef)}`), api("GET", `/api/qinglong/push?ref=${encodeURIComponent(state.selectedRef)}`)]); state.jobs = jobsResult.jobs || []; applyJobsMeta(jobsResult); applyPush(push); renderJobs(); if (state.mode === "runs") await loadRuns(); } catch (error) { state.jobs = []; renderJobs(); $("managementSummary").textContent = `读取失败：${error.message}`; showToast(error.message, true); } }
-    function applyPush(push) { const channel = push.channel || "none", labels = { none: "已关闭", serverchan: "Server酱", pushplus: "PushPlus", qywx: "企业微信机器人" }; $("pushChannel").value = channel; $("pushToken").value = ""; $("pushTopic").value = ""; $("tokenConfigured").textContent = push.token_configured ? "已配置，留空表示保留" : ""; $("topicConfigured").textContent = push.topic_configured ? "已配置，留空表示清空" : ""; $("pushSummary").textContent = labels[channel] || channel; syncPushFields(); }
+    function renderAccount() { const account = getSelectedAccount(), accountState = account?.status === "alive" ? "可用" : account?.status === "expired" ? "需重新扫码" : "待确认"; $("accountIdentity").innerHTML = account ? `状态：<strong>${accountState}</strong> · 账号：<code>${escapeHTML(accountLabel(account))}</code> · OpenID：<code>${escapeHTML(account.openid)}</code>` : "请先扫码添加账号"; $("runScope").textContent = account ? `${accountLabel(account)} 的运行日志` : "账号运行日志"; $("pushAccountContext").textContent = account ? `${accountLabel(account)} 的通知配置，切换账号会读取对应设置。` : "请先添加账号，再配置独立推送。"; $("togglePushBtn").disabled = !account; }
+    async function loadSelected() { state.openLogKey = ""; state.pendingRun = null; if (!state.selectedRef) { state.jobs = []; state.runs = []; renderJobs(); renderRuns(); return; } const ref = state.selectedRef; $("managementSummary").textContent = "正在读取任务"; try { const [jobsResult, push] = await Promise.all([api("GET", `/api/qinglong/jobs?ref=${encodeURIComponent(ref)}`), api("GET", `/api/qinglong/push?ref=${encodeURIComponent(ref)}`)]); if (ref !== state.selectedRef) return; state.jobs = jobsResult.jobs || []; applyJobsMeta(jobsResult); applyPush(push); renderJobs(); if (state.mode === "runs") await loadRuns(); } catch (error) { if (ref !== state.selectedRef) return; state.jobs = []; renderJobs(); $("managementSummary").textContent = `读取失败：${error.message}`; showToast(error.message, true); } }
+    function applyPush(push) { const channel = push.channel || "none", labels = { none: "已关闭", serverchan: "Server酱", pushplus: "PushPlus", qywx: "企业微信机器人" }; $("pushChannel").value = channel; $("pushToken").value = ""; $("pushTopic").value = ""; $("tokenConfigured").textContent = push.token_configured ? "已配置，留空表示保留" : ""; $("topicConfigured").textContent = push.topic_configured ? "已配置，留空表示清空" : ""; $("pushSummary").textContent = labels[channel] || channel; $("pushStatus").classList.toggle("enabled", channel !== "none"); syncPushFields(); }
     function syncPushFields() { const channel = $("pushChannel").value; $("tokenField").hidden = channel === "none"; $("topicField").hidden = channel !== "pushplus"; }
+    function setPushOpen(open, focus = false) { state.pushOpen = Boolean(open); $("pushForm").hidden = !state.pushOpen; $("togglePushBtn").setAttribute("aria-expanded", String(state.pushOpen)); $("togglePushBtn").textContent = state.pushOpen ? "收起设置" : "配置推送"; if (focus && state.pushOpen) $("pushChannel").focus(); }
     function counts() { return { configured: state.jobs.filter(job => job.provisioned).length, enabled: state.jobs.filter(job => job.enabled).length, running: state.jobs.filter(job => job.running).length, all: state.jobs.length }; }
     function filteredJobs() { const query = $("taskSearchInput").value.trim().toLowerCase(), dir = $("taskDirSelect").value; return state.jobs.filter(job => { const matchesView = state.taskView === "all" || (state.taskView === "configured" && job.provisioned) || (state.taskView === "enabled" && job.enabled); const matchesDir = !dir || (job.dir || "") === dir; return matchesView && matchesDir && (!query || job.name.toLowerCase().includes(query) || job.script_key.toLowerCase().includes(query)); }); }
     function renderStats(summary) { $("configuredCount").textContent = summary.configured; $("enabledCount").textContent = summary.enabled; $("runningCount").textContent = summary.running; $("compatibleCount").textContent = summary.all; $("configuredTabCount").textContent = summary.configured; $("enabledTabCount").textContent = summary.enabled; $("allTabCount").textContent = summary.all; }
@@ -172,7 +200,7 @@
     async function loadJobsOnly() { if (!state.selectedRef || document.hidden) return; try { const result = await api("GET", `/api/qinglong/jobs?ref=${encodeURIComponent(state.selectedRef)}`); state.jobs = result.jobs || []; applyJobsMeta(result); renderJobs(); } catch { } }
     $("accountSelect").addEventListener("change", async event => { state.selectedRef = event.target.value; localStorage.setItem("yyb-runs-account", state.selectedRef); state.runs = []; state.pendingRun = null; state.openLogKey = ""; renderAccount(); await loadSelected(); });
     $("reloadBtn").addEventListener("click", async () => { await Promise.all([loadConnection(), loadAccounts()]); await loadSelected(); if (state.mode === "runs") await loadRuns(); showToast("账号状态已刷新"); });
-    $("pushChannel").addEventListener("change", syncPushFields); $("pushForm").addEventListener("submit", async event => { event.preventDefault(); if (!state.selectedRef) return; const button = $("savePushBtn"); button.disabled = true; const topic = $("pushChannel").value === "pushplus" ? $("pushTopic").value : null; try { const result = await api("PUT", "/api/qinglong/push", { ref: state.selectedRef, channel: $("pushChannel").value, token: $("pushToken").value, topic }); applyPush(result); showToast("账号推送设置已保存"); } catch (error) { showToast(error.message, true); } finally { button.disabled = false; } });
+    $("togglePushBtn").addEventListener("click", () => setPushOpen(!state.pushOpen, !state.pushOpen)); $("pushChannel").addEventListener("change", syncPushFields); $("pushForm").addEventListener("submit", async event => { event.preventDefault(); if (!state.selectedRef) return; const button = $("savePushBtn"); button.disabled = true; const topic = $("pushChannel").value === "pushplus" ? $("pushTopic").value : null; try { const result = await api("PUT", "/api/qinglong/push", { ref: state.selectedRef, channel: $("pushChannel").value, token: $("pushToken").value, topic }); applyPush(result); showToast("账号推送设置已保存"); } catch (error) { showToast(error.message, true); } finally { button.disabled = false; } });
     $("modeTabs").addEventListener("click", event => { const tab = event.target.closest(".tab"); if (tab) setMode(tab.dataset.mode); }); $("taskTabs").addEventListener("click", event => { const tab = event.target.closest(".tab"); if (tab) setTaskView(tab.dataset.view); });
     $("jobsBody").addEventListener("change", event => { const input = event.target.closest('[data-action="toggle"]'); if (input) toggleJob(input.dataset.key, input.checked); }); $("jobsBody").addEventListener("click", event => { const button = event.target.closest('button[data-action="run"]'); if (button) runJob(button.dataset.key); });
     $("runsBody").addEventListener("click", event => { const button = event.target.closest("button[data-action]"); if (button?.dataset.action === "run-log") showRunLog(button.dataset.key); });
@@ -180,8 +208,9 @@
     $("taskSearchInput").addEventListener("input", renderJobs); $("taskDirSelect").addEventListener("change", () => renderJobs());
     $("clearTaskSearchBtn").addEventListener("click", () => { $("taskSearchInput").value = ""; $("taskSearchInput").focus(); renderJobs(); }); $("browseBtn").addEventListener("click", () => setTaskView("all", true));
     $("runSearchInput").addEventListener("input", renderRuns); $("clearRunSearchBtn").addEventListener("click", () => { $("runSearchInput").value = ""; $("runSearchInput").focus(); renderRuns(); }); $("refreshRunsBtn").addEventListener("click", async () => { await loadRuns(); await refreshOpenLog(); }); $("backToTasksBtn").addEventListener("click", () => setMode("tasks"));
-    (async function init() { try { await Promise.all([loadConnection(), loadAccounts()]); await loadSelected(); } catch (error) { showToast(error.message, true); } state.timer = setInterval(async () => { await loadJobsOnly(); if (state.mode === "runs") { await loadRuns(true); await refreshOpenLog(true); } }, 3000); })();
+    (async function init() { setPushOpen(state.pushOpen); try { await Promise.all([loadConnection(), loadAccounts()]); await loadSelected(); if (initialView === "logs" || initialView === "system") setMode(state.mode); if (initialView === "push") requestAnimationFrame(() => $("pushSettings").scrollIntoView({ block: "start" })); } catch (error) { showToast(error.message, true); } state.timer = setInterval(async () => { await loadJobsOnly(); if (state.mode === "runs") { await loadRuns(true); await refreshOpenLog(true); } }, 3000); })();
   </script>
-  <script src="/static/js/platform.js"></script>
+  <script src="/static/js/system-logs.js?v=20261112-graphite"></script>
+  <script src="/static/js/platform.js?v=20261112-graphite"></script>
 </body>
 </html>

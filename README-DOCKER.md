@@ -1,4 +1,4 @@
-# YYB Go 网关 — 纯 Docker 部署
+# wxcode-YYB 网关 — 纯 Docker 部署
 
 > 单容器跑通微信小程序取码：浏览器打开 `/scan` 出二维码 → 手机微信扫码 → 登录态
 > （login_buffer）自动保存并刷新，青龙脚本随后按账号取 code。
@@ -65,7 +65,7 @@ wxcode-yyb-fusion-docker/
 
 ## 三、快速开始（手动部署）
 
-> 不想手敲就用根目录的 `./deploy.sh`（一键部署，见开头）；下面两种方式适合想自己控制的场景。
+> 不想手敲就用根目录的 `./deploy.sh`（一键部署，见开头）。下面两种方式适合想自己控制部署过程的场景：**正常部署只用方式 A（拉镜像）**，方式 B 是改了源码或没有可拉镜像时的备选。
 
 ### 方式 A：拉取预构建镜像（推荐）
 
@@ -83,20 +83,21 @@ docker compose up -d        # 拉取 chungg/wxcode-yyb-fusion:latest 并启动
 **当前跑的是哪个版本，登录页会直接告诉你**：页面左栏底部和右栏「版本更新」标题旁都会显示版本号，取的是镜像内的 `/static/version.json`（构建时由 `VERSION` 构建参数写入）。想从命令行核对：
 
 ```bash
-docker compose exec yyb-go cat /app/resource/static/version.json   # -> {"version":"v11"}
+docker compose exec yyb-go cat /app/resource/static/version.json   # -> {"version":"v17"}
 # 或
 curl -s http://127.0.0.1:8088/static/version.json
 ```
 
-该文件是公开静态资源（不含敏感信息），所以不需要令牌。本地 `compose.build.yaml` 自建的镜像
-不属于 `v<N>` 发布序列，这里会显示 `local`。
+该文件是公开静态资源（不含敏感信息），所以不需要令牌。本地 `compose.build.yaml` 自建时用的是仓库里的 `VERSION` 文件（当前 `v17`），版本号和拉下来的镜像一致，登录页不会出现占位符。
 
-### 方式 B：本机自行构建
+### 方式 B：自己构建镜像（可选，一般不需要）
 
 ```bash
 cp .env.example .env
-docker compose -f compose.build.yaml up -d --build
+docker compose -f compose.build.yaml up -d --build   # 构建阶段会先跑 go test ./...
 ```
+
+Docker Hub 上已有发布镜像时不需要这一步；只有你要改 Go 源码、或所在网络拉不到镜像时才用。
 
 > 两个 compose 文件的项目名、服务名、数据卷完全一致，可以随时互换，不会产生两套容器。
 
@@ -126,6 +127,8 @@ curl http://127.0.0.1:8088/instances
 ```
 
 （以上接口均需访问令牌，见第五节。）
+
+> 青龙、呆呆、Arcadia 等外部渠道要配哪些变量、脚本侧怎么写 `YYB_SERVER` 与 `YYB_API_KEY`，见 [README.md「对接其他渠道」](README.md#对接其他渠道青龙--自建脚本--其他面板)。
 
 ## 四、多用户与账号隔离（v4.2.2）
 
@@ -270,7 +273,7 @@ GATEWAY_HEADERS = {"Authorization": f"Bearer {GATEWAY_TOKEN}"} if GATEWAY_TOKEN 
 > ⚠️ **v4.2.4 及更早版本存在横向越权**：任何登录用户（哪怕是最普通的账号）用浏览器
 > 打开 `/instances` 就能列出**全部**账号的 openid，还能借 `api_shared` 默认开启按 `ref`
 > 取到他人（含管理员）的 code。原因是「有效会话」被当成与令牌等价的凭据放行，却没有把
-> 会话身份注入请求上下文，下游 handler 于是按「无会话的公开 API 调用」处理。v4.2.5 已按
+> 会话身份注入请求上下文，后续 handler 于是按「无会话的公开 API 调用」处理。v4.2.5 已按
 > 上表修正；越权请求返回 `account not found`，不泄露账号是否存在或归属。
 
 ### ⚠️ 一个组合要注意
@@ -286,7 +289,7 @@ v3.0.0 及更早的 docker-deploy 曾用 redroid（Android-in-Docker）把微信
 需要宿主机内核 binder/ashmem 支持，普通云 VPS / macOS / WSL2 大多不可用，且要维护
 微信登录态，非常脆弱。
 
-v4.0.0 起改为**单服务纯 Docker**：扫码登录走 YYB Go 原生协议，完全不需要 Android 环境。
+v4.0.0 起改为**单服务纯 Docker**：扫码登录走 wxcode-YYB 原生协议，完全不需要 Android 环境。
 v13 起连「可选的安卓设备取码端点」也一并移除，代码与镜像中不再含任何安卓组件。
 
 ## 七、常见问题

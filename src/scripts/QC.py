@@ -132,7 +132,7 @@ if len(SERVERS) == 0:
     print("10.30.9.49:8088")
     sys.exit(1)
 
-print(f"✅ 读取到 {len(SERVERS)} 个 YYB Go 账号")
+print(f"✅ 读取到 {len(SERVERS)} 个 wxcode-YYB 账号")
 print("-" * 60 + "\n")
 
 def parse_yyb_go_entry(raw_value: str) -> Tuple[str, str]:

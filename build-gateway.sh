@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 交叉编译 YYB Go 融合网关的 Linux 预编译二进制（Dockerfile 依赖它们）。
+# 交叉编译 wxcode-YYB 融合网关的 Linux 预编译二进制（Dockerfile 依赖它们）。
 #
 # 用法：
 #   ./build-gateway.sh            # 编译 amd64 + arm64

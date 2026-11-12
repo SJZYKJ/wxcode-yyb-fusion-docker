@@ -43,7 +43,7 @@ func newFakeQingLong(t *testing.T) (*fakeQingLong, *httptest.Server) {
 		crons: []qingLongCron{
 			{ID: 1, Name: "美的会员", Command: "task SuperNaiBA_YYB-GO-Script/MDHY.js", Schedule: "11 8 * * *", Status: 1, IsDisabled: intPointer(1)},
 			{ID: 2, Name: "EOOS", Command: "task SuperNaiBA_YYB-GO-Script/eoos/eoos_checkin.py", Schedule: "30 8 * * *", Status: 1, IsDisabled: intPointer(1)},
-			{ID: 3, Name: "DT生活", Command: "task 525815266_YYB-Go-Enhanced/scripts/DTSH.py", Schedule: "48 15 * * *", Status: 1, IsDisabled: intPointer(1)},
+			{ID: 3, Name: "DT生活", Command: "task qinglong/scripts/DTSH.py", Schedule: "48 15 * * *", Status: 1, IsDisabled: intPointer(1)},
 		},
 		scripts: fakeScriptTree(),
 	}
@@ -72,7 +72,7 @@ func fakeScriptTree() []qingLongScriptNode {
 				{Title: "eoos_checkin.py", Value: "SuperNaiBA_YYB-GO-Script/eoos/eoos_checkin.py", Parent: "SuperNaiBA_YYB-GO-Script/eoos"},
 			}},
 		}},
-		{Title: "DTSH.py", Value: "525815266_YYB-Go-Enhanced/scripts/DTSH.py", Parent: "525815266_YYB-Go-Enhanced/scripts"},
+		{Title: "DTSH.py", Value: "qinglong/scripts/DTSH.py", Parent: "qinglong/scripts"},
 		{Title: "美的会员副本.js", Value: "美的会员副本.js"},
 		{Title: "SendNotify.py", Value: "SendNotify.py"},
 		{Title: "node_modules", Value: "node_modules", Children: []qingLongScriptNode{
@@ -236,7 +236,9 @@ func newRunsTestApp(t *testing.T, qlURL string) (*App, http.Handler, string) {
 	}
 	t.Cleanup(func() { _ = app.Close() })
 	status := "alive"
-	acc, err := app.db.UpsertAccount(context.Background(), "test-openid", "buffer", nil, nil, nil, nil, nil, &status, nil)
+	// 归属走上游模型的 auth.account_owners（见 runs.go accountOwnerKey），
+	// 所以 store.WechatAccount 侧不再有 owner_user_id 参数。
+	acc, err := app.db.UpsertAccount(context.Background(), "test-openid", "buffer", nil, nil, nil, nil, nil, &status)
 	if err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
@@ -260,7 +262,7 @@ func TestEnhancedRepoScriptsKeepTheirSourcePath(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if got := fake.commands[len(fake.commands)-1]; got != "task 525815266_YYB-Go-Enhanced/scripts/DTSH.py" {
+	if got := fake.commands[len(fake.commands)-1]; got != "task qinglong/scripts/DTSH.py" {
 		t.Fatalf("managed command = %q", got)
 	}
 }
@@ -289,11 +291,11 @@ func TestScriptCatalogUsesScriptFiles(t *testing.T) {
 		t.Fatalf("scripts_total = %d, want 12", payload.ScriptsTotal)
 	}
 	want := map[string]bool{
-		"code脚本/绿鼻子.js":                             false,
-		"code脚本/匠心中华.js":                            false,
-		"SuperNaiBA_YYB-GO-Script/MDHY.js":          false,
-		"525815266_YYB-Go-Enhanced/scripts/DTSH.py": false,
-		"美的会员副本.js":                                 false,
+		"code脚本/绿鼻子.js":                    false,
+		"code脚本/匠心中华.js":                   false,
+		"SuperNaiBA_YYB-GO-Script/MDHY.js": false,
+		"qinglong/scripts/DTSH.py":         false,
+		"美的会员副本.js":                        false,
 	}
 	active := make(map[string]bool, len(payload.Jobs))
 	for _, job := range payload.Jobs {
@@ -379,7 +381,7 @@ func TestScriptCatalogFallsBackToCronTasks(t *testing.T) {
 		keys[job.ScriptKey] = true
 	}
 	// 三个任务里能解析出脚本的只有两个；eoos_checkin.py 与网关自建任务都不算
-	if len(keys) != 2 || !keys["SuperNaiBA_YYB-GO-Script/MDHY.js"] || !keys["525815266_YYB-Go-Enhanced/scripts/DTSH.py"] {
+	if len(keys) != 2 || !keys["SuperNaiBA_YYB-GO-Script/MDHY.js"] || !keys["qinglong/scripts/DTSH.py"] {
 		t.Fatalf("降级后应列出定时任务里的 2 个脚本, got %v", keys)
 	}
 }
@@ -417,7 +419,7 @@ func TestParseScriptPathFromCron(t *testing.T) {
 		valid bool
 	}{
 		{"中文目录", qingLongCron{Name: "绿鼻子", Command: "task code脚本/绿鼻子.js"}, "code脚本/绿鼻子.js", true},
-		{"多级目录", qingLongCron{Name: "DT生活", Command: "task 525815266_YYB-Go-Enhanced/scripts/DTSH.py"}, "525815266_YYB-Go-Enhanced/scripts/DTSH.py", true},
+		{"多级目录", qingLongCron{Name: "DT生活", Command: "task qinglong/scripts/DTSH.py"}, "qinglong/scripts/DTSH.py", true},
 		{"无目录", qingLongCron{Name: "美的", Command: "task 美的会员.js"}, "美的会员.js", true},
 		{"node 绝对路径", qingLongCron{Name: "美的", Command: "node /ql/scripts/美的会员.js"}, "美的会员.js", true},
 		{"python 绝对路径带中文目录", qingLongCron{Name: "绿鼻子", Command: "python3 /ql/scripts/code脚本/绿鼻子.py"}, "code脚本/绿鼻子.py", true},
@@ -442,6 +444,21 @@ func TestParseScriptPathFromCron(t *testing.T) {
 		if ok && path != tc.path {
 			t.Fatalf("%s: got path=%q, want %q", tc.desc, path, tc.path)
 		}
+	}
+}
+
+func TestParseScriptKeyFromCronNormalizesWindowsSeparators(t *testing.T) {
+	repos := []string{"qinglong/scripts"}
+	cron := qingLongCron{
+		Name:    "京东签到",
+		Command: `task \qinglong\scripts\weile_coin.py`,
+	}
+	key, repo, ok := parseScriptKeyFromCron(cron, repos)
+	if !ok {
+		t.Fatal("Windows-style task command was not recognized")
+	}
+	if key != "weile_coin.py" || repo != repos[0] {
+		t.Fatalf("parsed task = %q in repo %q, want weile_coin.py in %q", key, repo, repos[0])
 	}
 }
 
@@ -542,6 +559,66 @@ func TestAccountJobsAreIsolatedDisabledByDefaultAndRunExplicitly(t *testing.T) {
 	}
 }
 
+func TestAccountJobsShowCurrentPanelSchedule(t *testing.T) {
+	fake, server := newFakeQingLong(t)
+	_, handler, ref := newRunsTestApp(t, server.URL)
+
+	enable := apiRequest(t, handler, http.MethodPut, "/api/qinglong/jobs/enable", map[string]any{
+		"ref": ref, "script_key": "MDHY.js", "enabled": true,
+	})
+	if enable.Code != http.StatusOK {
+		t.Fatalf("enable response = %d %s", enable.Code, enable.Body.String())
+	}
+
+	fake.mu.Lock()
+	for i := range fake.crons {
+		if strings.HasPrefix(fake.crons[i].Name, "[YYB:") {
+			fake.crons[i].Schedule = "17 6 * * *"
+		}
+	}
+	fake.mu.Unlock()
+
+	list := apiRequest(t, handler, http.MethodGet, "/api/qinglong/jobs?ref="+url.QueryEscape(ref), nil)
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"schedule":"17 6 * * *"`) {
+		t.Fatalf("jobs did not expose current panel schedule: %d %s", list.Code, list.Body.String())
+	}
+}
+
+func TestAccountJobReclaimsQingLongCronAfterLocalMappingLoss(t *testing.T) {
+	fake, server := newFakeQingLong(t)
+	fake.mu.Lock()
+	fake.crons = append(fake.crons, qingLongCron{
+		ID: 77, Name: "[YYB:1] 美的会员",
+		Command:  "task SuperNaiBA_YYB-GO-Script/MDHY.js",
+		Schedule: "11 8 * * *", LogName: "old-yyb-log", Status: 1, IsDisabled: intPointer(1),
+	})
+	fake.mu.Unlock()
+	app, handler, ref := newRunsTestApp(t, server.URL)
+	run := apiRequest(t, handler, http.MethodPost, "/api/qinglong/jobs/run", map[string]any{
+		"ref": ref, "script_key": "MDHY.js",
+	})
+	if run.Code != http.StatusAccepted {
+		t.Fatalf("run response = %d %s", run.Code, run.Body.String())
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.crons) != 4 {
+		t.Fatalf("recovery created a duplicate cron: %d crons", len(fake.crons))
+	}
+	if len(fake.runIDs) != 1 || fake.runIDs[0] != 77 {
+		t.Fatalf("run IDs = %v, want existing cron 77", fake.runIDs)
+	}
+	// 下游的脚本 key 是「相对脚本根目录的完整路径」（matchScriptKey 归一化后的结果），
+	// 上游这条用例里写的是裸文件名；按合并后的 key 模型读同一条记录，断言不变。
+	job, err := app.db.GetAccountScriptJob(context.Background(), 1, "SuperNaiBA_YYB-GO-Script/MDHY.js")
+	if err != nil {
+		t.Fatalf("restored account job: %v", err)
+	}
+	if job.QLCronID != 77 {
+		t.Fatalf("restored cron id = %d, want 77", job.QLCronID)
+	}
+}
+
 func TestAccountJobUsesCurrentQingLongStateFields(t *testing.T) {
 	fake, server := newFakeQingLong(t)
 	_, handler, ref := newRunsTestApp(t, server.URL)
@@ -609,7 +686,7 @@ func TestAccountRunHistoryAndLogAreScopedToAccount(t *testing.T) {
 	}
 
 	status := "alive"
-	second, err := app.db.UpsertAccount(context.Background(), "second-openid", "buffer", nil, nil, nil, nil, nil, &status, nil)
+	second, err := app.db.UpsertAccount(context.Background(), "second-openid", "buffer", nil, nil, nil, nil, nil, &status)
 	if err != nil {
 		t.Fatalf("seed second account: %v", err)
 	}

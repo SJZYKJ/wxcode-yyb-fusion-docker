@@ -21,8 +21,10 @@ type pskEntry struct {
 }
 
 type mmtlsClient struct {
-	conn    net.Conn
-	timeout time.Duration
+	conn       net.Conn
+	timeout    time.Duration
+	ctx        context.Context
+	stopCancel func() bool
 
 	g1Priv *ecdh.PrivateKey
 	g1Pub  []byte
@@ -51,11 +53,15 @@ type mmtlsClient struct {
 	recq  []record
 }
 
-func newMmtlsClient(conn net.Conn, timeout time.Duration) *mmtlsClient {
-	return &mmtlsClient{conn: conn, timeout: timeout}
+func newMmtlsClient(ctx context.Context, conn net.Conn, timeout time.Duration) *mmtlsClient {
+	return &mmtlsClient{conn: conn, timeout: timeout, ctx: ctx,
+		stopCancel: context.AfterFunc(ctx, func() { _ = conn.Close() })}
 }
 
 func (m *mmtlsClient) close() {
+	if m.stopCancel != nil {
+		m.stopCancel()
+	}
 	if m.conn != nil {
 		_ = m.conn.Close()
 	}
@@ -72,15 +78,16 @@ func (m *mmtlsClient) transcriptHash() []byte {
 
 func (m *mmtlsClient) nextRecord() (record, error) {
 	for len(m.recq) == 0 {
+		if err := m.ctx.Err(); err != nil {
+			return record{}, err
+		}
 		recs, consumed := parseRecords(m.rxbuf)
 		if len(recs) > 0 {
 			m.recq = append(m.recq, recs...)
 			m.rxbuf = m.rxbuf[consumed:]
 			break
 		}
-		if m.timeout > 0 {
-			_ = m.conn.SetReadDeadline(time.Now().Add(m.timeout))
-		}
+		_ = m.conn.SetReadDeadline(ioDeadline(m.ctx, m.timeout))
 		buf := make([]byte, 65536)
 		n, err := m.conn.Read(buf)
 		if err != nil {
@@ -97,9 +104,10 @@ func (m *mmtlsClient) nextRecord() (record, error) {
 }
 
 func (m *mmtlsClient) sendRaw(data []byte) error {
-	if m.timeout > 0 {
-		_ = m.conn.SetWriteDeadline(time.Now().Add(m.timeout))
+	if err := m.ctx.Err(); err != nil {
+		return err
 	}
+	_ = m.conn.SetWriteDeadline(ioDeadline(m.ctx, m.timeout))
 	_, err := m.conn.Write(data)
 	return err
 }
@@ -304,6 +312,17 @@ func pickAccessPSK(entries []pskEntry) (pskEntry, bool) {
 	return pskEntry{}, false
 }
 
+// Preserve the server-issued refresh key separately. It must not be sent as
+// an access PSK; implementing its long-link resume handshake is separate work.
+func pickRefreshPSK(entries []pskEntry) pskEntry {
+	for _, e := range entries {
+		if e.PSKType == 2 && e.ExpiredAt > time.Now().Unix() {
+			return e
+		}
+	}
+	return pskEntry{}
+}
+
 func (m *mmtlsClient) sendApp(cmd uint32, body []byte) error {
 	pkt := buildShortlink(cmd, m.appSeq, body, defaultVer)
 	m.appSeq++
@@ -326,10 +345,10 @@ func connectMmtls(ctx context.Context, target Target, timeout time.Duration, tcp
 	if err != nil {
 		return nil, err
 	}
-	mc := newMmtlsClient(conn, timeout)
+	mc := newMmtlsClient(ctx, conn, timeout)
 	if err = mc.doHandshake(); err != nil {
 		mc.close()
-		return nil, err
+		return nil, fmt.Errorf("LongLink handshake to %s failed: %w", net.JoinHostPort(target.IP, fmt.Sprint(target.Port)), err)
 	}
 	return mc, nil
 }

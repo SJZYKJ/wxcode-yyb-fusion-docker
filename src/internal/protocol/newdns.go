@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,8 +20,20 @@ const (
 	longlinkDomain  = "longcloud.weixin.com"
 	shortlinkDomain = "shortcloud.weixin.com"
 	protoMMTLS      = "mmtlsovertcp"
+	protoHTTP       = "http"
 	defaultUA       = "MicroMessenger Client"
 )
+
+// shortlinkFallbackTargets are reachable shortlink endpoints returned by the
+// official HTTPDNS (shortcloud.weixin.com -> aewebproxy.weixin.qq.com) as of
+// the 2026-10 domain migration. The previous fallback 120.241.131.173 was
+// decommissioned by WeChat and is no longer reachable.
+var shortlinkFallbackTargets = []Target{
+	{IP: "116.128.171.253", Port: 80},
+	{IP: "140.207.120.146", Port: 80},
+	{IP: "182.50.15.223", Port: 80},
+	{IP: "182.50.15.171", Port: 80},
+}
 
 type Target struct {
 	IP   string `json:"ip"`
@@ -46,6 +57,12 @@ var dnsCache = struct {
 }{entries: map[string]dnsCacheEntry{}}
 
 func buildDNSQuery(clientVersion int, deviceType string, uin int) string {
+	if clientVersion == 0 {
+		clientVersion = clientVersionDefault
+	}
+	if deviceType == "" {
+		deviceType = "Windows"
+	}
 	v := url.Values{}
 	v.Set("clientversion", strconv.Itoa(clientVersion))
 	v.Set("devicetype", deviceType)
@@ -64,9 +81,9 @@ func requestNewDNS(ctx context.Context, connectTo string, timeout time.Duration)
 		return 0, nil, "", err
 	}
 	defer conn.Close()
-	if timeout > 0 {
-		_ = conn.SetDeadline(time.Now().Add(timeout))
-	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
+	_ = conn.SetDeadline(ioDeadline(ctx, timeout))
 	path := newdnsPath + "?" + buildDNSQuery(0, "Windows", 0)
 	req := fmt.Sprintf("GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: %s\r\nAccept: */*\r\nConnection: close\r\n\r\n", path, newdnsHost, defaultUA)
 	if _, err = conn.Write([]byte(req)); err != nil {
@@ -206,52 +223,91 @@ func serversFor(parsed map[string]dnsDomain, domain, proto string) []Target {
 
 func getLonglinkTargets(ctx context.Context, timeout, cacheTTL time.Duration) ([]Target, error) {
 	parsed, err := getDNSParsed(ctx, timeout, cacheTTL, false)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if targets := serversFor(parsed, longlinkDomain, protoMMTLS); len(targets) > 0 {
+			return targets, nil
+		}
 	}
-	return serversFor(parsed, longlinkDomain, protoMMTLS), nil
+	// 有些网络会把微信 HTTPDNS 的响应打掉（或返回空），但普通 DNS 与 LongLink 443
+	// 仍然可用；此时交给 net.Dialer（或已配置的 TCP 代理）解析官方域名。
+	// 合并说明：这是上游 v0.2.28 起的官域回退，下游版本在这里直接返回 nil，
+	// 会让上游新增的原生 autoauth（要求 targets 非空）在同样网络下拉不到目标。
+	return []Target{{IP: longlinkDomain, Port: 443}}, nil
 }
 
 func getShortlinkTargets(ctx context.Context, timeout, cacheTTL time.Duration) []Target {
 	parsed, err := getDNSParsed(ctx, timeout, cacheTTL, false)
-	if err != nil {
-		return []Target{{IP: "120.241.131.173", Port: 80}}
-	}
-	targets := serversFor(parsed, shortlinkDomain, "http")
-	seen := map[string]bool{}
-	var out []Target
-	for _, t := range targets {
-		if t.Port == 80 && !seen[t.IP] {
-			seen[t.IP] = true
-			out = append(out, t)
+	if err == nil {
+		// Prefer the "mmtlsoverhttp" protocol when advertised (the current
+		// backend uses it), falling back to plain "http".
+		for _, proto := range []string{"mmtlsoverhttp", protoHTTP} {
+			targets := serversFor(parsed, shortlinkDomain, proto)
+			seen := map[string]bool{}
+			var out []Target
+			for _, t := range targets {
+				if t.Port == 80 && !seen[t.IP] {
+					seen[t.IP] = true
+					out = append(out, t)
+				}
+			}
+			if len(out) > 0 {
+				return out
+			}
 		}
 	}
-	if len(out) == 0 {
-		return []Target{{IP: "120.241.131.173", Port: 80}}
-	}
+	// HTTPDNS is unavailable on some networks. Fall back to the reachable
+	// official endpoints rather than the decommissioned legacy IP, and also
+	// allow normal DNS to resolve the official hostname (its CNAME now points
+	// to aewebproxy.weixin.qq.com) when a TCP proxy performs name resolution.
+	out := append([]Target(nil), shortlinkFallbackTargets...)
+	out = append(out, Target{IP: shortlinkDomain, Port: 80})
 	return out
 }
 
 func orderLonglinkTargets(targets []Target, max int) []Target {
-	pref := []int{8080, 80, 443, 5000}
-	seen := map[string]bool{}
+	// A host can advertise several usable ports. Keep each endpoint, with 443
+	// first because some CONNECT proxies restrict the available destination ports.
+	pref := []int{443, 8080, 80, 5000}
+	seen := map[Target]bool{}
 	var out []Target
+	add := func(t Target) {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
 	for _, p := range pref {
 		for _, t := range targets {
-			if t.Port == p && !seen[t.IP] {
-				seen[t.IP] = true
-				out = append(out, t)
+			if t.Port == p {
+				add(t)
 			}
 		}
 	}
-	if len(out) == 0 {
-		out = append(out, targets...)
+	for _, t := range targets {
+		add(t)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].IP < out[j].IP })
 	if max > 0 && len(out) > max {
 		out = out[:max]
 	}
 	return out
+}
+
+func longlinkLoginTargets(targets []Target, max int) []Target {
+	// A successful HTTPDNS answer does not prove its endpoints are reachable.
+	// Always reserve a slot for regular DNS (or proxy-side DNS) of the official
+	// hostname, even when HTTPDNS supplied more endpoints than the attempt limit.
+	fallback := Target{IP: longlinkDomain, Port: 443}
+	ordered := orderLonglinkTargets(targets, 0)
+	out := make([]Target, 0, len(ordered)+1)
+	for _, target := range ordered {
+		if target != fallback {
+			out = append(out, target)
+		}
+	}
+	if max > 0 && len(out) >= max {
+		out = out[:max-1]
+	}
+	return append(out, fallback)
 }
 
 func splitHTTP(raw []byte) (string, []byte) {

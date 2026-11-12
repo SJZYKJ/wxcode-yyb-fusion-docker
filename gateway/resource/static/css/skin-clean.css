@@ -1,0 +1,29 @@
+/* =============================================================================
+   skin-clean.css — 主题兼容层（v3「青石墨」）
+   -----------------------------------------------------------------------------
+   旧版这里是可选的「清爽皮肤」。新版设计系统把深色优先的配色与明暗双主题
+   统一收进 platform.css：主题由 <html data-theme="dark|light"> 决定，首屏开关
+   仍复用 localStorage 键 "yyb-skin"（页面 head 的引导脚本读取它）。
+
+   这个文件保留下来有两个原因：
+     1) 所有加载 platform.js 的页面都要引用它（resource/skin_test.go 会检查）；
+     2) 给历史链接与 data-skin 属性一个无害的落点，避免旧书签出现半套样式。
+   现在它只做少量兜底，不再定义配色。
+   ========================================================================== */
+
+/* 旧皮肤属性不再切换视觉，只是标记；保证不会因为残留属性而丢掉暗色背景。 */
+[data-skin="clean"],
+[data-skin="classic"] { color-scheme: inherit; }
+
+/* 早期版本给 .platform-skin 按钮用的样式，新版命令栏改用 #platformTheme。 */
+.platform-skin { display: none !important; }
+
+/* 浏览器强制高对比时，边框加粗一档，避免玻璃拟态卡片糊在一起。 */
+@media (forced-colors: active) {
+  .card,
+  .panel,
+  .band,
+  .links-panel,
+  .push-settings { border: 1px solid CanvasText; }
+  .btn { border: 1px solid CanvasText; }
+}

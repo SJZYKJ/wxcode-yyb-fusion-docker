@@ -6,7 +6,7 @@ product
 
 ## Users
 
-Self-hosted operators who use YYB Go with QingLong and need to scan a WeChat account, verify its saved identity, and call mini-program protocol endpoints.
+Self-hosted operators who use wxcode-YYB with QingLong and need to scan a WeChat account, verify its saved identity, and call mini-program protocol endpoints.
 
 ## Product Purpose
 
@@ -25,6 +25,7 @@ Avoid marketing-style layouts, decorative dashboards, hidden identifiers, and su
 - Show the saved account identifiers immediately after scanning.
 - Keep account state and protocol actions easy to verify.
 - Prefer familiar controls and explicit error states.
+- Present accounts as compact cards with restrained spacing; preserve the card layout when refining density.
 - Treat account credentials and identifiers as sensitive operational data.
 
 ## Accessibility & Inclusion

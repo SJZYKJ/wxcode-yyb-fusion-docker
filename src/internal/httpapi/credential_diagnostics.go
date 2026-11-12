@@ -1,0 +1,151 @@
+package httpapi
+
+import (
+	"errors"
+	"log"
+	"net/http"
+	"regexp"
+	"strconv"
+
+	"yyb_go/internal/ldplayer"
+	"yyb_go/internal/pcmgr"
+	"yyb_go/internal/protocol"
+	"yyb_go/internal/qbbrowser"
+)
+
+// Only typed business rejections produce public diagnostics. Never copy an
+// error string: it may include credentials, an OpenID or proxy authentication.
+type upstreamDiagnostic struct {
+	Stage        string `json:"stage"`
+	UpstreamCode int64  `json:"upstream_code"`
+	WeChatCode   int    `json:"wechat_code,omitempty"`
+}
+
+var diagnosticWeChatCode = regexp.MustCompile(`(?i)(?:^|(?:\berror\b|\bcode\b)\s*[:=]?\s*|\[)(40030|42002|42007|40188)(?:$|[\s\]|,;])`)
+
+func credentialDiagnostics(err error) []upstreamDiagnostic {
+	out := make([]upstreamDiagnostic, 0)
+	seen := make(map[upstreamDiagnostic]bool)
+	var visit func(error)
+	visit = func(err error) {
+		if err == nil {
+			return
+		}
+		var item upstreamDiagnostic
+		var message string
+		switch e := err.(type) {
+		case *pcmgr.BufferRejectedError:
+			item.Stage, item.UpstreamCode = "pcmgr_login_buffer", int64(e.Code)
+		case *pcmgr.RPCError:
+			switch e.Command {
+			case 20138:
+				item.Stage, item.UpstreamCode = "pcmgr_login_buffer", int64(e.Code)
+			case 20042:
+				item.Stage, item.UpstreamCode = "pcmgr_key_renewal", int64(e.Code)
+			}
+		case *protocol.RefreshRejectedError:
+			item.Stage = "refresh_token"
+			if e.Operation == "check_login" {
+				item.Stage = "check_login"
+			}
+			item.UpstreamCode, message = int64(e.Code), e.Message
+		case *protocol.LoginBufferRejectedError:
+			item.Stage, item.UpstreamCode, message = "login_buffer", int64(e.Code), e.Message
+		case *qbbrowser.TokenRejectedError:
+			// 渠道侧票据网关拒绝了推送的 QQ 浏览器 ctk（err_code 非 0）。这是
+			// login_buffer 阶段失败，和 pcmgr 的 BufferRejectedError 同级；
+			// 不映射的话，这条渠道的取码失败只剩一句 “call failed”，
+			// 操作者无法判断是票据失效还是网络/协议问题。
+			item.Stage, item.UpstreamCode = "login_buffer", int64(e.Code)
+		case *ldplayer.BufferRejectedError:
+			// 雷电游戏中心换票返回的 HTTP 状态或业务码（code!=200）。
+			item.Stage, item.UpstreamCode = "login_buffer", int64(e.Status)
+		case *protocol.ManualAuthRejectedError:
+			item.Stage, item.UpstreamCode = "manual_auth", e.Code
+		case *protocol.LoginCodeRejectedError:
+			if e.Stage == "jslogin_business" || e.Stage == "jslogin_result" {
+				item.Stage, item.UpstreamCode = e.Stage, int64(e.Code)
+			}
+		case *protocol.ErrH5OAuthBusinessRejected:
+			item.Stage, item.UpstreamCode = "h5_oauth_business", int64(e.Ret)
+		case *protocol.AutoAuthRejectedError:
+			switch e.Stage {
+			case "transport", "application", "business":
+				item.Stage, item.UpstreamCode = "native_autoauth_"+e.Stage, e.Code
+			}
+		case *protocol.ShortlinkRejectedError:
+			item.Stage, item.UpstreamCode = "shortlink_application", e.Code
+			if e.Transport {
+				item.Stage = "shortlink_transport"
+			}
+		}
+		if item.Stage != "" {
+			if match := diagnosticWeChatCode.FindStringSubmatch(message); len(match) > 1 {
+				item.WeChatCode, _ = strconv.Atoi(match[1])
+			}
+			if !seen[item] {
+				seen[item] = true
+				out = append(out, item)
+			}
+		}
+		switch e := err.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range e.Unwrap() {
+				visit(child)
+			}
+		case interface{ Unwrap() error }:
+			visit(e.Unwrap())
+		}
+	}
+	visit(err)
+	return out
+}
+
+func writeAccountExpired(w http.ResponseWriter, err accountExpiredError) {
+	diagnostics := credentialDiagnostics(err.cause)
+	if len(diagnostics) > 0 {
+		log.Printf("protocol: account id=%d credential recovery rejected: %+v", err.accountID, diagnostics)
+	}
+	writeRawJSON(w, http.StatusConflict, apiEnvelope{
+		Code: http.StatusConflict,
+		Msg:  "account login_buffer expired (refresh failed); re-scan required",
+		Data: map[string]any{"rescan_required": true, "upstream_errors": diagnostics},
+	})
+}
+
+func writeProtocolCallError(w http.ResponseWriter, err error) {
+	var member *fleetMemberReferenceError
+	if errors.As(err, &member) {
+		writeRawJSON(w, http.StatusConflict, apiEnvelope{Code: http.StatusConflict, Msg: member.Error(), Data: map[string]any{"primary_ref": member.PrimaryID, "member_ref_not_allowed": true}})
+		return
+	}
+	diagnostics := credentialDiagnostics(err)
+	if stage := responseFailureStage(err); stage != "" {
+		writeRawJSON(w, http.StatusBadGateway, apiEnvelope{
+			Code: http.StatusBadGateway,
+			Msg:  "call failed: " + err.Error(),
+			Data: map[string]any{"response_stage": stage, "upstream_errors": diagnostics, "request_rejected": false},
+		})
+		return
+	}
+	if len(diagnostics) == 0 {
+		writeError(w, http.StatusBadGateway, "call failed: "+err.Error())
+		return
+	}
+	writeRawJSON(w, http.StatusBadGateway, apiEnvelope{
+		Code: http.StatusBadGateway,
+		Msg:  "call failed: " + err.Error(),
+		Data: map[string]any{"upstream_errors": diagnostics, "request_rejected": protocol.IsApplicationRequestRejection(err) || protocol.IsBusinessResponseRejection(err)},
+	})
+}
+
+func responseFailureStage(err error) string {
+	var payload *protocol.ShortlinkResponseError
+	if errors.As(err, &payload) {
+		switch payload.Stage {
+		case "mmtls_records", "mmtls_decrypt", "session_payload":
+			return payload.Stage
+		}
+	}
+	return ""
+}

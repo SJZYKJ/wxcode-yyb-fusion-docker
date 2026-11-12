@@ -23,7 +23,7 @@ services:
       args:
         # 本地自建镜像不参与 v<N> 发布序列，登录页的「当前版本」会显示 local；
         # CI 构建时写入真实版本号（见 .github/workflows/docker-publish.yml）
-        VERSION: local
+        VERSION: v17
     image: "${IMAGE_REPO:-chungg/wxcode-yyb-fusion}:${IMAGE_TAG:-latest}"
     container_name: wxcode-yyb-gateway
     restart: unless-stopped
@@ -60,6 +60,36 @@ services:
       YYB_ALLOW_NO_AUTH: ${YYB_ALLOW_NO_AUTH:-false}
       YYB_ALLOW_REGISTRATION: ${YYB_ALLOW_REGISTRATION:-false}
       YYB_TRUST_PROXY: ${YYB_TRUST_PROXY:-false}
+      # 注册邮箱验证码。任意一项留空则注册会被明确拒绝并提示联系管理员。
+      YYB_SMTP_HOST: ${YYB_SMTP_HOST:-}
+      YYB_SMTP_PORT: ${YYB_SMTP_PORT:-}
+      YYB_SMTP_USERNAME: ${YYB_SMTP_USERNAME:-}
+      YYB_SMTP_PASSWORD: ${YYB_SMTP_PASSWORD:-}
+      YYB_SMTP_FROM: ${YYB_SMTP_FROM:-}
+      YYB_SMTP_TLS: ${YYB_SMTP_TLS:-true}
+      TZ: ${TZ:-Asia/Shanghai}
+      # ---- 可选高级开关（全部可选，留空即用内置默认值）----
+      YYB_PROTOCOL_TOKEN: ${YYB_PROTOCOL_TOKEN:-}
+      YYB_INTEGRATION_TOKEN: ${YYB_INTEGRATION_TOKEN:-}
+      YYB_QINGLONG_REF_MODE: ${YYB_QINGLONG_REF_MODE:-id}
+      YYB_QINGLONG_REPO: ${YYB_QINGLONG_REPO:-}
+      YYB_ENABLE_PC_LOGIN: ${YYB_ENABLE_PC_LOGIN:-false}
+      YYB_DEVICE_IDENTITY: ${YYB_DEVICE_IDENTITY:-stable}
+      YYB_APPSTORE_REFRESH_MODE: ${YYB_APPSTORE_REFRESH_MODE:-legacy_auth}
+      YYB_NOTIFY_CHANNEL: ${YYB_NOTIFY_CHANNEL:-}
+      YYB_NOTIFY_TOKEN: ${YYB_NOTIFY_TOKEN:-}
+      YYB_NOTIFY_TOPIC: ${YYB_NOTIFY_TOPIC:-}
+      YYB_NOTIFY_ACCOUNT_PUSH: ${YYB_NOTIFY_ACCOUNT_PUSH:-true}
+      YYB_CIRCUIT_BREAKER: ${YYB_CIRCUIT_BREAKER:-on}
+      YYB_CODE_MIN_GAP: ${YYB_CODE_MIN_GAP:-3s}
+      YYB_CODE_MAX_WAIT: ${YYB_CODE_MAX_WAIT:-20s}
+      YYB_LOGIN_BUDGET: ${YYB_LOGIN_BUDGET:-3}
+      YYB_LOGIN_WINDOW: ${YYB_LOGIN_WINDOW:-10m}
+      YYB_FRESH_SESSION_WINDOW: ${YYB_FRESH_SESSION_WINDOW:-}
+      YYB_CODE_DENY_APPIDS: ${YYB_CODE_DENY_APPIDS:-}
+      YYB_CODE_ALLOW_APPIDS: ${YYB_CODE_ALLOW_APPIDS:-}
+      YYB_CODE_DYNAMIC_DENY: ${YYB_CODE_DYNAMIC_DENY:-}
+      YYB_CODE_DYNAMIC_DENY_THRESHOLD: ${YYB_CODE_DYNAMIC_DENY_THRESHOLD:-}
       GIN_MODE: release
     volumes:
       - ${DATA_DIR:-./data}/db:/app/resource/db
