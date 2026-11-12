@@ -4,7 +4,7 @@
 > （login_buffer）自动保存并刷新，青龙脚本随后按账号取 code。
 > **无需 root 手机、无需 Android 容器、无需 Xposed**（v13 起安卓设备 Hook 取码已整体下线）。
 
-## ⚡ 一键部署（推荐）
+## ⚡ 一键部署（最省事）
 
 ```bash
 # 不用 clone：自动下载编排文件、生成访问令牌、启动并做健康检查
@@ -19,7 +19,7 @@ cd wxcode-yyb-fusion-docker && ./deploy.sh
 `./deploy.sh --help` 查看全部参数（端口、绑定地址、指定令牌、镜像标签、`--dry-run`、
 `--logs`、`--uninstall`）；默认会**生成并开启访问令牌**（说明见第五节）。
 
-不想用脚本，就照第三节的三行 compose 手动部署。
+不想用脚本，就用第三节的 `docker run`（最省事，数据挂宿主机）或三行 compose 手动部署。
 
 ## 一、取码原理
 
@@ -67,12 +67,49 @@ wxcode-yyb-fusion-docker/
 
 > 不想手敲就用根目录的 `./deploy.sh`（一键部署，见开头）。下面两种方式适合想自己控制部署过程的场景：**正常部署只用方式 A（拉镜像）**，方式 B 是改了源码或没有可拉镜像时的备选。
 
-### 方式 A：拉取预构建镜像（推荐）
+### 方式 A：拉取预构建镜像（推荐首选）
+
+#### 最简单：docker run（不 clone 仓库，数据放宿主机，重建容器不丢账号）
+
+**Linux / macOS：**
+
+```bash
+docker run -d --name wxcode-yyb-gateway --restart unless-stopped \
+  -p 8088:8088 -e TZ=Asia/Shanghai \
+  -v "$PWD/data/db:/app/resource/db" \
+  -v "$PWD/data/avatars:/app/resource/avatars" \
+  -v "$PWD/data/qr:/app/resource/qr" \
+  chungg/wxcode-yyb-fusion:v17
+```
+
+**Windows PowerShell：**
+
+```powershell
+docker run -d --name wxcode-yyb-gateway --restart unless-stopped `
+  -p 8088:8088 -e TZ=Asia/Shanghai `
+  -v "${PWD}\data\db:/app/resource/db" `
+  -v "${PWD}\data\avatars:/app/resource/avatars" `
+  -v "${PWD}\data\qr:/app/resource/qr" `
+  chungg/wxcode-yyb-fusion:v17
+```
+
+- 三个目录要**分别**挂载（`db` / `avatars` / `qr`）；不要挂整个 `/app/resource`，否则会盖掉镜像内的页面模板与静态资源。
+- **`YYB_API_TOKEN` 留空即可**：首次启动自动生成随机令牌、存进数据库（重启不变），并打印在容器日志里：
+
+  ```bash
+  docker logs wxcode-yyb-gateway 2>&1 | grep 令牌
+  ```
+
+  需要固定时加 `-e YYB_API_TOKEN=<你的令牌>`；脚本侧 `YYB_API_KEY` 填同一个值。
+- 只想临时试试（数据随容器删除）：`docker run -d --name wxcode-yyb-gateway --restart unless-stopped -p 8088:8088 chungg/wxcode-yyb-fusion:latest`
+- 升级：`docker pull chungg/wxcode-yyb-fusion:latest` → `docker rm -f wxcode-yyb-gateway` → 重跑上面的 `docker run`（卷不动，数据保留）。
+
+#### 或者用 docker compose（变量多、长期维护时更省事）
 
 ```bash
 git clone https://github.com/SJZYKJ/wxcode-yyb-fusion-docker.git
 cd wxcode-yyb-fusion-docker
-cp .env.example .env        # 默认即可
+cp .env.example .env        # 默认即可；YYB_API_TOKEN 留空会自动生成并打印到日志
 docker compose up -d        # 拉取 chungg/wxcode-yyb-fusion:latest 并启动
 ```
 
