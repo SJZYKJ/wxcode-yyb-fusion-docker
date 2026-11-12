@@ -297,6 +297,36 @@ func (s *Store) BootstrapAdmin(ctx context.Context, username, password string) e
 	return err
 }
 
+// BootstrapAdminIfEmpty 在 users 表为空时创建管理员，并返回是否真的创建了。
+//
+// 零配置部署（没配 YYB_ADMIN_PASSWORD、也没配 SMTP）时，注册页用不了，
+// 必须有一个可登录的入口，否则容器起来后谁也进不去。这里用单条
+// INSERT ... SELECT ... WHERE NOT EXISTS 保证并发启动不会创建出两个管理员。
+func (s *Store) BootstrapAdminIfEmpty(ctx context.Context, username, password string) (bool, error) {
+	username = normalizeUsername(username)
+	if password == "" || username == "" {
+		return false, nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return false, err
+	}
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `INSERT INTO users
+        (username, display_name, password_hash, role, enabled, created_at, updated_at)
+        SELECT ?, ?, ?, 'admin', TRUE, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM users)`,
+		username, username, string(hash), now, now)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 // RegisterUser promotes only the first registered account to administrator.
 // The role decision and insert happen in one statement, so concurrent requests
 // cannot both observe an empty users table.

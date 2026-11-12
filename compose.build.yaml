@@ -51,6 +51,7 @@ services:
       YYB_AUTH_DRIVER: ${YYB_AUTH_DRIVER:-sqlite}
       YYB_AUTH_DSN: ${YYB_AUTH_DSN:-}
       YYB_AUTH_MYSQL_DSN: ${YYB_AUTH_MYSQL_DSN:-}
+      # 密码留空 = 启动时自动生成并打印到容器日志（见 bootstrap_admin.go）。
       YYB_ADMIN_USER: ${YYB_ADMIN_USER:-admin}
       YYB_ADMIN_PASSWORD: ${YYB_ADMIN_PASSWORD:-}
       YYB_COOKIE_SECURE: ${YYB_COOKIE_SECURE:-false}

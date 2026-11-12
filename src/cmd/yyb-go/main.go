@@ -164,8 +164,11 @@ func main() {
 		AuthMySQLDSN:      legacyAuthDSN,
 		AdminUser:         getEnvWithFallback("YYB_ADMIN_USER", "YYB_WEB_USER"),
 		AdminPassword:     getEnvWithFallback("YYB_ADMIN_PASSWORD", "YYB_WEB_PASSWORD"),
-		CookieSecure:      os.Getenv("YYB_COOKIE_SECURE") == "true",
-		EnablePCLogin:     strings.EqualFold(strings.TrimSpace(os.Getenv("YYB_ENABLE_PC_LOGIN")), "true"),
+		// 零配置部署：没配管理员密码、也没配 SMTP 时，注册页用不了，
+		// 这里自动建一个 admin 并把随机密码打到日志，保证首次能进控制台。
+		AutoBootstrapAdmin: true,
+		CookieSecure:       os.Getenv("YYB_COOKIE_SECURE") == "true",
+		EnablePCLogin:      strings.EqualFold(strings.TrimSpace(os.Getenv("YYB_ENABLE_PC_LOGIN")), "true"),
 
 		// Accounts with a script push channel are notified there by default.
 		NotifyChannel:            os.Getenv("YYB_NOTIFY_CHANNEL"),

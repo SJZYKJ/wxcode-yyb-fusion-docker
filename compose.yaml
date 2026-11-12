@@ -46,6 +46,8 @@ services:
       YYB_AUTH_DRIVER: ${YYB_AUTH_DRIVER:-sqlite}
       YYB_AUTH_DSN: ${YYB_AUTH_DSN:-}
       YYB_AUTH_MYSQL_DSN: ${YYB_AUTH_MYSQL_DSN:-}
+      # 首个管理员：用户库为空时生效。密码留空则启动时自动生成随机密码并打印到
+      # 容器日志（docker logs <容器名> 2>&1 | grep 管理员），没配 SMTP 也能登录。
       YYB_ADMIN_USER: ${YYB_ADMIN_USER:-admin}
       YYB_ADMIN_PASSWORD: ${YYB_ADMIN_PASSWORD:-}
       YYB_COOKIE_SECURE: ${YYB_COOKIE_SECURE:-false}

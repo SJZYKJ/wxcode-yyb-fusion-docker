@@ -14,6 +14,7 @@
     <div class="auth-card-body">
       <h1>创建账号</h1>
       <p class="lead">首个账号自动成为管理员，后续账号默认为普通用户。</p>
+      <p class="lead" style="font-size:12.5px;opacity:.78">未配置邮件服务（YYB_SMTP_*）时注册不可用：首次启动会自动生成管理员 <b>admin</b>，初始密码打印在容器日志里（<code>docker logs 容器名 2&gt;&amp;1 | grep 管理员</code>），登录后请到「个人设置」改密码。</p>
       <form id="form">
         <div class="field"><label for="username">用户名</label><input class="input" id="username" autocomplete="username" pattern="[a-z0-9_.-]{3,64}" required><small>3-64 位小写字母、数字、点、下划线或连字符</small></div>
         <div class="field"><label for="displayName">显示名</label><input class="input" id="displayName" autocomplete="name" maxlength="100" required></div>
@@ -40,6 +41,7 @@
         <div class="feature-item"><span class="fi-icon">邮</span><div><strong>邮箱验证注册</strong><p>注册需通过邮箱验证码校验，验证码一次性使用、限时有效，同一邮箱发送有频率限制。</p></div></div>
         <div class="feature-item"><span class="fi-icon">隔</span><div><strong>账号隔离</strong><p>普通用户只能看到和管理自己扫码添加的微信账号，管理员统一管理。</p></div></div>
         <div class="feature-item"><span class="fi-icon">权</span><div><strong>角色分明</strong><p>管理员可调整成员角色、停用账号与重置密码，操作留痕。</p></div></div>
+        <div class="feature-item"><span class="fi-icon">码</span><div><strong>多渠道取码</strong><p>应用宝、电脑管家、手游助手、雷电模拟器、QQ 浏览器任选，同一微信号多渠道取码自动合并。</p></div></div>
       </div>
     </div>
   </aside>

@@ -45,8 +45,10 @@ const apiTokenHeader = "X-API-Token"
 //
 // 令牌比较用常量时间函数，避免按字符逐位比较带来的时序侧信道。
 func (a *App) requireAPIToken(bypass ...func(*http.Request) bool) gin.HandlerFunc {
-	expected := strings.TrimSpace(a.cfg.APIToken)
 	return func(c *gin.Context) {
+		// 每次请求都读当前令牌：管理员在「个人设置」里重新生成后立即生效，
+		// 不需要重启容器。
+		expected := a.currentAPIToken()
 		for _, skip := range bypass {
 			if skip != nil && skip(c.Request) {
 				// 免检路径（控制台登录提交）：顺手注入会话身份，
@@ -172,4 +174,23 @@ func (a *App) browserSessionUser(c *gin.Context) (*auth.User, bool) {
 	ctx = context.WithValue(ctx, authSessionKey, session)
 	c.Request = c.Request.WithContext(ctx)
 	return user, true
+}
+
+// currentAPIToken 返回当前生效的 API 访问令牌。
+// 优先取运行期值（个人设置里可能刚重新生成过），没有则回落到 Config。
+func (a *App) currentAPIToken() string {
+	a.apiTokenMu.RLock()
+	value := a.apiTokenValue
+	a.apiTokenMu.RUnlock()
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(a.cfg.APIToken)
+}
+
+// setAPIToken 更新运行期令牌；配合 currentAPIToken 让令牌轮换即时生效。
+func (a *App) setAPIToken(token string) {
+	a.apiTokenMu.Lock()
+	a.apiTokenValue = strings.TrimSpace(token)
+	a.apiTokenMu.Unlock()
 }

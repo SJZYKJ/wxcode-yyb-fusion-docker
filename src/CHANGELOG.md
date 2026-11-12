@@ -10,6 +10,17 @@
 
 下面是与 **v16**（上一个线上发布版）逐项核对后的差异：功能、接口、变量、设置、数据库。
 
+### v17 本次补充 · 零配置部署与几处界面修正
+
+- **首次启动自动建管理员**：没配 `YYB_ADMIN_PASSWORD`、也没配 SMTP 时，用户库为空会自动创建 `admin` + 16 位随机密码，并打印到容器日志（`docker logs <容器名> 2>&1 | grep 管理员`）。账号名可用 `YYB_ADMIN_USER` 覆盖；实现见 `internal/httpapi/bootstrap_admin.go` 与 `internal/auth` 的 `BootstrapAdminIfEmpty`（单条 `INSERT ... WHERE NOT EXISTS`，并发启动也只会建一个）。
+- **注册页**：补上第四个功能卡「多渠道取码」，并在表单上方提示未配 SMTP 时用日志里的 admin 账号登录。
+- **代理设置 → 微信账号列表**：不再渲染头像图片，改为首字母色块 —— 原先头像会把账号名盖住。
+- **个人设置新增「接口令牌」卡片**：可查看（默认脱敏）、复制、重新生成 `YYB_API_KEY`（即 `YYB_API_TOKEN`）。重新生成写入数据库并立即生效，旧令牌立刻失效；令牌由环境变量固定时界面只读并说明原因。
+- **接口新增**：`GET /api/settings/api-token`（脱敏视图）、`POST /api/settings/api-token`（重新生成），均仅管理员可调用。
+- **令牌热更新**：`requireAPIToken` 改为每次请求读当前令牌（`App.currentAPIToken`），不再在路由构建时把令牌固化成闭包变量。
+
+
+
 #### 一、取码渠道：1 条 → 5 条
 
 | 渠道 | ID | 说明 |

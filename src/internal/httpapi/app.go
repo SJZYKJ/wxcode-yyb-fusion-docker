@@ -77,6 +77,10 @@ type Config struct {
 	AllowNoAuth bool
 	// AllowRegistration 控制公开注册；缺省关闭，只保留「内网首注册引导」。
 	AllowRegistration bool
+	// AutoBootstrapAdmin=true 时，若数据库里一个用户都没有、且没有配置
+	// YYB_ADMIN_PASSWORD，就自动生成管理员账号与随机密码并打印到日志。
+	// 只由 main 打开，测试里的 Config 保持零值以免隐式建账号。
+	AutoBootstrapAdmin bool
 	// TrustProxy 允许信任 X-Forwarded-For 以还原真实客户端 IP。
 	TrustProxy bool
 	// SMTP 是注册邮箱验证码的发信配置（见 emailverify.go / smtp_settings.go）。
@@ -136,6 +140,10 @@ type App struct {
 	cfg       Config
 	resources resources
 	db        *store.DB
+	// apiTokenMu 保护运行期可变的 API 令牌（个人设置里「重新生成令牌」），
+	// 零值时回落到 cfg.APIToken，因此不影响既有构造路径。
+	apiTokenMu    sync.RWMutex
+	apiTokenValue string
 	// emailCode 保存注册邮箱验证码与发送限流（见 emailverify.go）。
 	// 广播模式（a.auth == nil）下不使用。
 	emailCode          *emailVerifier
@@ -344,7 +352,7 @@ func NewApp(cfg Config) (*App, error) {
 			_ = db.Close()
 			return nil, authErr
 		}
-		if authErr = authStore.BootstrapAdmin(authCtx, cfg.AdminUser, cfg.AdminPassword); authErr != nil {
+		if authErr = bootstrapAdminAccount(authCtx, authStore, cfg); authErr != nil {
 			_ = authStore.Close()
 			_ = db.Close()
 			return nil, fmt.Errorf("bootstrap admin: %w", authErr)
@@ -489,6 +497,8 @@ func (a *App) Handler() http.Handler {
 	adminRoutes.Any("/api/auth/registration", gin.WrapF(a.handleRegistrationSetting))
 	// 下游定制：SMTP 设置（注册邮箱验证码）、账号脚本可读开关、青龙脚本目录可见范围。
 	adminRoutes.Any("/api/auth/smtp", gin.WrapF(a.handleSMTPSettings))
+	// 下游定制：个人设置里的「接口令牌」（查看 / 重新生成 YYB_API_TOKEN）。
+	adminRoutes.Any("/api/settings/api-token", gin.WrapF(a.handleAPITokenSettings))
 	router.Any("/accounts/share", gin.WrapF(a.handleAccountShare))
 	adminRoutes.Any("/api/qinglong/script-visibility", gin.WrapF(a.handleScriptVisibility))
 	router.Any("/api/account-links", gin.WrapF(a.handleAccountLinksAPI))
@@ -1286,7 +1296,7 @@ func (a *App) authorizeProtocol(w http.ResponseWriter, r *http.Request) bool {
 	if expected == "" {
 		return true
 	}
-	if api := strings.TrimSpace(a.cfg.APIToken); api != "" && apiTokenMatches(r, api) {
+	if api := a.currentAPIToken(); api != "" && apiTokenMatches(r, api) {
 		return true
 	}
 	provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
