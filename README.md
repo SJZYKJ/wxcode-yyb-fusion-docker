@@ -72,9 +72,9 @@
 
 ## 部署方式
 
-前置条件：Docker 与 Docker Compose v2；如果要和面板互通，需要两者共用一个 Docker 网络（默认名 `qinglong_default`）。
+前置条件：只要 Docker（方式二一条 `docker run` 即可）；要用 compose 需要 Docker Compose v2。如果要和面板互通，需要两者共用一个 Docker 网络（默认名 `qinglong_default`）。
 
-### 方式一：一键脚本（推荐，不需要 clone）
+### 方式一：一键脚本（最省事，脚本会代做下面两种方式的所有步骤）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SJZYKJ/wxcode-yyb-fusion-docker/main/deploy.sh | bash
@@ -96,18 +96,60 @@ curl -fsSL https://raw.githubusercontent.com/SJZYKJ/wxcode-yyb-fusion-docker/mai
 | `--dry-run` | 只生成 `.env` 并打印命令，不启动容器 |
 | `--uninstall` | 停止并删除容器（保留数据目录） |
 
-### 方式二：docker compose 拉取镜像（推荐长期使用）
+### 方式二：docker run（推荐首选：一行拆成几行，数据放宿主机）
+
+镜像已发布在 Docker Hub，不需要 clone 仓库；数据放在宿主机，重建容器不丢账号。
+
+**Linux / macOS：**
+
+```bash
+docker run -d --name wxcode-yyb-gateway --restart unless-stopped \
+  -p 8088:8088 -e TZ=Asia/Shanghai \
+  -v "$PWD/data/db:/app/resource/db" \
+  -v "$PWD/data/avatars:/app/resource/avatars" \
+  -v "$PWD/data/qr:/app/resource/qr" \
+  chungg/wxcode-yyb-fusion:v17
+```
+
+**Windows PowerShell：**
+
+```powershell
+docker run -d --name wxcode-yyb-gateway --restart unless-stopped `
+  -p 8088:8088 -e TZ=Asia/Shanghai `
+  -v "${PWD}\data\db:/app/resource/db" `
+  -v "${PWD}\data\avatars:/app/resource/avatars" `
+  -v "${PWD}\data\qr:/app/resource/qr" `
+  chungg/wxcode-yyb-fusion:v17
+```
+
+- 三个目录必须**分别**挂载（`db` / `avatars` / `qr`），不要把整个 `/app/resource` 挂上去——那会盖掉镜像里的页面模板和静态资源。
+- **`YYB_API_TOKEN` 留空就行**：首次启动会自动生成一个随机令牌、存进数据库（重启不变），并把令牌打印在容器日志里。查看：
+
+  ```bash
+  docker logs wxcode-yyb-gateway 2>&1 | grep 令牌
+  ```
+
+  想固定（例如脚本里已经写死了令牌），加 `-e YYB_API_TOKEN=<你的令牌>` 即可，脚本侧 `YYB_API_KEY` 填同一个值。
+- 只想临时试一下（数据随容器一起删，不挂卷）：
+
+  ```bash
+  docker run -d --name wxcode-yyb-gateway --restart unless-stopped -p 8088:8088 chungg/wxcode-yyb-fusion:latest
+  ```
+
+- 升级：`docker pull chungg/wxcode-yyb-fusion:latest` → `docker rm -f wxcode-yyb-gateway` → 再执行上面同一条 `docker run`（卷不动，数据保留）。
+
+### 方式三：docker compose 拉取镜像（变量多、长期维护时用）
 
 ```bash
 git clone https://github.com/SJZYKJ/wxcode-yyb-fusion-docker.git
 cd wxcode-yyb-fusion-docker
 
-cp .env.example .env        # 至少改 YYB_API_TOKEN（留空会自动生成并打印到日志）
+cp .env.example .env        # 默认即可；YYB_API_TOKEN 留空会自动生成并打印到日志
 docker compose pull
 docker compose up -d
 ```
 
-### 方式三：自己构建镜像（可选，一般不需要）
+### 方式四：自己构建镜像（可选，一般不需要）
 
 ```bash
 # A. 完全在 Docker 内构建（构建阶段会先跑 go test ./...）
@@ -136,27 +178,6 @@ docker pull chungg/wxcode-yyb-fusion:v17       # 固定版本，便于回滚
 
 - 版本号是全局递增的整数发布号（`v17`、`v18`…），构建期写入镜像内的 `/static/version.json`，登录页与 `/api/version` 显示的都是它。
 - 固定版本：在 `.env` 里设 `IMAGE_TAG=v17`，或部署脚本加 `--image-tag v17`。
-
-## 自行构建与推送
-
-> 官方镜像已经发布在 Docker Hub，**普通部署不需要这一节**；只有你要改代码、自己出镜像时才用。
-
-自行构建镜像并推送到 Docker Hub：
-
-```bash
-docker login
-docker build -t chungg/wxcode-yyb-fusion:v17 -f Dockerfile .
-docker tag  chungg/wxcode-yyb-fusion:v17 chungg/wxcode-yyb-fusion:latest
-docker push chungg/wxcode-yyb-fusion:v17
-docker push chungg/wxcode-yyb-fusion:latest
-```
-
-仓库自带 GitHub Actions 工作流（`.github/workflows/docker-publish.yml`），推标签即构建并推送镜像。启用前在仓库 Secrets 里配置：
-
-| Secret | 用途 |
-| --- | --- |
-| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
-| `DOCKERHUB_TOKEN` | Docker Hub Access Token（不要用登录密码） |
 
 ## 配置说明
 
