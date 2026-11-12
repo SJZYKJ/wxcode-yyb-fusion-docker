@@ -10,9 +10,11 @@
 端口：宿主 8088 → 容器 8088
 健康检查：GET /health
 ```
-**界面截图1**：
+**界面截图**：
 
-<img width="1910" height="883" alt="ScreenShot_2026-11-12_140230_270" src="https://github.com/user-attachments/assets/e3592da5-97f6-46a4-aeb6-16c5eb075b9d" />
+<img width="1910" height="883" alt="扫码" src="https://github.com/user-attachments/assets/3608b2f5-3fa7-402c-90b1-6646c99ca0f1" />
+<img width="1910" height="883" alt="五合一" src="https://github.com/user-attachments/assets/83da6cf5-9970-42cd-abb7-88867d6ea2bd" />
+<img width="1910" height="883" alt="五分五" src="https://github.com/user-attachments/assets/37d6b5aa-6581-4d95-94df-b9dcadb41c69" />
 
 ---
 
